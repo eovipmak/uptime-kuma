@@ -39,7 +39,7 @@
         "vite-preview-dist": "vite preview --host --config ./config/vite.config.js",
         "upload-artifacts": "node extra/release/upload-artifacts.mjs",
         "upload-artifacts-beta": "node extra/release/upload-artifacts-beta.mjs",
-        "setup": "git checkout 2.5.3 && npm ci --omit dev --no-audit && npm run download-dist",
+        "setup": "npm ci --omit dev --no-audit && npm run download-dist",
         "download-dist": "node extra/download-dist.js",
         "mark-as-nightly": "node extra/mark-as-nightly.js",
         "reset-password": "node extra/reset-password.js",
