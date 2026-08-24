@@ -1,7 +1,7 @@
 # Task G1.05 — tenant_id Columns + Composite Indexes on Existing Tables
 
 **Phase:** G1 — Data Model & Migration
-**Status:** todo
+**Status:** completed
 **Reviewer:** Tech lead / Uptime Kuma maintainer (database domain)
 
 ## Objective
@@ -127,3 +127,10 @@ Uptime Kuma tech lead (database domain). Reviewer specifically confirms:
 - **Do not** add `tenant_id` to tables like `stat_minutely`, `stat_daily` unless the G0 contract explicitly says so — those aggregate tables derive tenant from `monitor_id`, not their own `tenant_id` (note: the contract may still require it for partition scans — implement whatever the contract says, nothing else).
 - **Do not** write cache key prefixes or the G4 repository wrapper.
 - **Do not** touch `server/model/user.js` for tenant membership — that is captured via `tenant_user` in `task-04`.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-24T19:44:06Z
+- Verification: CTO review — table set matches migration-contract.md Clause B exactly (10 business tables, no child/junction columns per ADR-0002); every `tenant_id` is nullable unsigned int FK -> tenant.id with CASCADE/CASCADE; explicit index names (`<table>_tenant_id_id_index`, plus `monitor_tenant_id_user_id_index`); knex-methods-only (dialect-portable). Fresh-SQLite smoke test (R.setup + createTables + migrate.latest on temp DB): UP OK — nullable int column present on all 10 tables and all 11 indexes created; rollback OK — columns and indexes fully removed. eslint clean on both changed files. `node ./extra/check-knex-filenames.mjs` passes. knex_init_db.js gained comments only (grep check). Commit touches exactly the 2 allowed files. MariaDB container test skipped this round: host is memory-constrained with active OOM kills (agent runs killed at 19:28Z); migration uses portable knex methods only — QA may re-run dialect test when memory allows.
+- Commit or artifact reference: branch `feat/g1-05-tenant-id-columns` (recovered from direct-to-master commit 55e17999 by Echo run f9bf6518, which died OOM before push/PR), merged via PR to master.
