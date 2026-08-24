@@ -332,20 +332,23 @@ class SetupDatabase {
     }
 }
 
+module.exports = {
+    SetupDatabase,
+};
+
 /**
  * Ensure the default tenant (slug "default") exists — G1.06 seeding path.
  *
  * Integration point (documented per kanban task-06 step 8): knex migrations are
- * applied inside Database.patch() (server/server.js -> initDatabase()), and
- * migration db/knex_migrations/2026-08-23-0002-seed-default-tenant.js already
+ * applied inside Database.patch() (called from initDatabase() in server/server.js),
+ * and migration db/knex_migrations/2026-08-23-0002-seed-default-tenant.js already
  * performs the full seed + backfill on both fresh installs and upgrades.
  * This helper exposes the idempotent re-seed step of that migration for callers
  * that run AFTER migrations complete — e.g. G2/task-09's fresh-install admin
  * setup handler, where the first user (and its tenant_user membership) is only
  * created once migrate.latest() has finished. It must be called after
- * Database.connect() / Database.patch(), never during this class's setup page,
- * where no database connection exists yet.
- *
+ * Database.connect() / Database.patch(), never from the SetupDatabase class's
+ * setup page flow, where no database connection exists yet.
  * @returns {Promise<number>} The id of the default tenant
  */
 async function seedDefaultTenantIfEmpty() {
@@ -354,7 +357,4 @@ async function seedDefaultTenantIfEmpty() {
     return await migration.seedDefaultTenantIfEmpty(R.knex);
 }
 
-module.exports = {
-    SetupDatabase,
-    seedDefaultTenantIfEmpty,
-};
+module.exports.seedDefaultTenantIfEmpty = seedDefaultTenantIfEmpty;
