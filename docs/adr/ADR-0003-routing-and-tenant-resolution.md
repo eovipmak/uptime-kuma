@@ -20,7 +20,7 @@ The plan freezes the tenant-resolution priority: **subdomain → custom domain �
 ## Decision
 
 1. **Reverse proxy: Caddy 2.x** as the reference edge for multi-tenant deployments, with an Nginx config *generator* also shipped by G6 for operators who standardize on Nginx. Caddy is chosen because:
-   - **Automatic HTTPS is built in** (Let's Encrypt/ZeroStaging ACME, incl. renewal) — no certbot sidecar, satisfying "SSL tự động qua Let's Encrypt/Caddy" with zero cost;
+   - **Automatic HTTPS is built in** (Let's Encrypt/ZeroSSL ACME, incl. renewal) — no certbot sidecar, satisfying "SSL tự động qua Let's Encrypt/Caddy" with zero cost;
    - **On-demand TLS** issues certificates lazily per requested hostname — the only practical way to serve arbitrary customer custom domains without pre-registering each one;
    - single static binary, trivially templated — G6's generated-config workflow emits a small Caddyfile from the `status_page_cname` table.
 2. **`resolveTenant()` middleware priority (exact order):**

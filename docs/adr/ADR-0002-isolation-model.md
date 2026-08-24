@@ -9,7 +9,7 @@ Deciders: CTO (architecture lead), Backend engineers (Dev1/Dev2), QA
 
 Per `database-schema.md`, the AS-IS schema has 27 tables. The `user_id` scoping summary shows the isolation seams today:
 
-- Business tables (`monitor`, `group`, `notification`, `status_page`, `maintenance`, `api_key`, `docker_host`, `proxy`, `tag`-related junctions) are scoped by a nullable `user_id` column.
+- Some business tables are owner-scoped by a (usually nullable) `user_id` column — `monitor`, `api_key`, `docker_host`, `proxy`, `notification`, `maintenance`, `remote_browser` — but several of those declare no FK at all, and `status_page`, `group`, `tag`, `incident`, and `status_page_cname` carry **no owner column whatsoever** (`database-schema.md` §user_id scoping summary).
 - High-volume child tables — `heartbeat`, `stat_minutely`, `stat_hourly`, `stat_daily` — have **no `user_id`**; they are anchored indirectly through `monitor_id` (`monitoring-engine.md`: both heartbeat writers set only `bean.monitor_id`).
 - Global/config tables (`setting`, `user`) are instance-wide.
 
