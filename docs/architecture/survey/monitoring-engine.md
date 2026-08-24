@@ -5,7 +5,7 @@
 ## 1. Monitor type registry
 
 - All monitor type implementations are instantiated and registered in the `UptimeKumaServer` constructor at `server/uptime-kuma-server.js:113-137` into the static map `UptimeKumaServer.monitorTypeList` (`server/uptime-kuma-server.js:55`).
-- Implementations live in `server/monitor-types/`. The base class is `MonitorType` in `server/monitor-types/monitor-type.js`; each implementation provides an `await check(...)` style entry used by the beat loop via `this.monitorTypeFactory(this.type)` / `this.runCheck()` in `server/model/monitor.js`.
+- Implementations live in `server/monitor-types/`. The base class is `MonitorType` in `server/monitor-types/monitor-type.js`; the beat loop dispatches through the static registry: `const monitorType = UptimeKumaServer.monitorTypeList[this.type]; await monitorType.check(this, bean, UptimeKumaServer.getInstance())` (`server/model/monitor.js:869-872`). Types not present in the registry (`http`, `keyword`, `json-query`, `ping`, `push`, `docker`, `radius`) are implemented inline inside `beat()` itself.
 - Registry entries (type string → class): `real-browser`, `tailscale-ping`, `websocket-upgrade`, `dns`, `postgres`, `mqtt`, `smtp`, `group`, `snmp`, `grpc-keyword`, `mongodb`, `rabbitmq`, `sip-options`, `gamedig`, `steam`, `port` (TCP), `manual`, `globalping`, `redis`, `pm2`, `system-service`, `sqlserver`, `mysql`, `oracledb`, `ntp` — plus `push`, which is not a registered class: push monitors are driven by the HTTP route `/api/push/:pushToken` instead of a scheduled check.
 - Files present under `server/monitor-types/` (26 files):
 

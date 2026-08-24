@@ -6,7 +6,7 @@ Evidence-based inventory of the Uptime Kuma codebase produced for the multi-tena
 
 - **Static analysis only.** No runtime probing: no dev server, no migrations, no database connections were run.
 - Sources read directly:
-  - `db/knex_init_db.js` and all 58 files under `db/knex_migrations/`
+  - `db/knex_init_db.js` and all 55 `.js` migration files under `db/knex_migrations/` (plus the directory's own `README.md`)
   - `server/routers/api-router.js`, `server/routers/status-page-router.js` (the only two routers; verified by directory listing)
   - all 10 files under `server/socket-handlers/`, plus direct `socket.on(...)` registrations inside `io.on("connection")` in `server/server.js` (note: `server/uptime-kuma-server.js` registers none itself)
   - `server/model/monitor.js`, `server/model/heartbeat.js`, `server/notification.js`, `server/uptime-kuma-server.js`, `server/server.js`, `server/client.js`, `server/auth.js`, `server/jobs.js`, `server/jobs/*.js`, `server/uptime-calculator.js`

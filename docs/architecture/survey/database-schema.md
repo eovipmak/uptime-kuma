@@ -7,7 +7,7 @@
 | Source | Role |
 | --- | --- |
 | `db/knex_init_db.js` | Creates the base schema used for MariaDB/MySQL installs (called "Converted Patch" section included). Header comment: "DO NOT ADD ANYTHING HERE! IF YOU NEED TO ADD FIELDS, ADD IT TO ./db/knex_migrations" (`db/knex_init_db.js:4-8`). |
-| `db/knex_migrations/*.js` | 58 migration files (2023-08 → 2026-08) that create tables and alter columns/indexes. |
+| `db/knex_migrations/*.js` | 55 migration files (2023-08 → 2026-08) that create tables and alter columns/indexes. |
 
 Note on dialects: SQLite installs are built from the same Knex definitions via `redbean-node`/Knex schema builder; some migrations (e.g. `2025-12-22-0121-optimize-important-indexes.js`, `2026-08-18-0000-sqlite-only-drop-analytics-type-check.js`) contain SQLite-specific branches. The inventory below reflects the union of all definitions found in code.
 
@@ -601,6 +601,10 @@ Existing `user_id` column: **No** (global cache keyed by domain string).
 | `notification_sent_history` | No | scoped via `monitor_id` (no FK) |
 | `setting` | No | global settings |
 | `domain_expiry` | No | global cache keyed by domain |
+
+## Observation recorded during the survey window: transient `tenant_id` migration file
+
+At the start of the survey session, an untracked working-tree file `db/knex_migrations/2026-08-24-0000-add-tenant-id.js` was present and read. Its `exports.up` added `tenant_id text DEFAULT NULL` to 12 tables — `monitor` (with index `monitor_tenant_id_idx`), `heartbeat` (with index `heartbeat_tenant_id_idx`), `notification`, `status_page`, `proxy`, `docker_host`, `group`, `incident`, `maintenance`, `maintenance_timeslot`, `api_key`, `tag`. The file no longer exists in the working tree as of commit time and is not part of git history; it is therefore excluded from the inventory above. No committed code under `server/` reads or writes a `tenant_id` column (`grep -rn "tenant_id" server/` returns no matches). Recorded here because downstream readers may encounter references to this experiment.
 
 ## Reproduce
 
