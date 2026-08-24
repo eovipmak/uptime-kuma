@@ -1,7 +1,7 @@
 # ADR-0003 — Routing and Tenant Resolution
 
 - **ADR:** ADR-0003 — Reverse proxy choice and `resolveTenant()` resolution order
-Status: Proposed
+Status: Accepted
 Date: 2026-08-23
 Deciders: CTO (architecture lead), Backend engineers (Dev1/Dev2), QA
 

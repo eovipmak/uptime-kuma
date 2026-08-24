@@ -1,7 +1,7 @@
 # ADR-0002 — Tenant Isolation Model
 
 - **ADR:** ADR-0002 — Isolation model: shared DB, shared schema, `tenant_id` column
-Status: Proposed
+Status: Accepted
 Date: 2026-08-23
 Deciders: CTO (architecture lead), Backend engineers (Dev1/Dev2), QA
 
