@@ -43,6 +43,7 @@
         "download-dist": "node extra/download-dist.js",
         "mark-as-nightly": "node extra/mark-as-nightly.js",
         "reset-password": "node extra/reset-password.js",
+        "seed:tenant-demo": "node extra/run-tenant-demo-seed.mjs",
         "remove-2fa": "node extra/remove-2fa.js",
         "simple-dns-server": "node extra/simple-dns-server.js",
         "simple-mqtt-server": "node extra/simple-mqtt-server.js",
