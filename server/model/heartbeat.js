@@ -1,4 +1,5 @@
 const { BeanModel } = require("redbean-node/dist/bean-model");
+const { R } = require("redbean-node");
 const zlib = require("node:zlib");
 const { promisify } = require("node:util");
 const brotliDecompress = promisify(zlib.brotliDecompress);
@@ -78,6 +79,29 @@ class Heartbeat extends BeanModel {
         } catch (error) {
             return response;
         }
+    }
+
+    /**
+     * Tenant derived getter: heartbeats have no tenant_id column, they inherit
+     * tenancy through their monitor anchor (see docs/architecture/erd-to-be.md).
+     * Kept for API consistency with the other models; always returns null.
+     * @returns {null} Heartbeats are tenant-scoped via their monitor
+     */
+    get tenantId() {
+        return null;
+    }
+
+    /**
+     * List all heartbeats belonging to a tenant (resolved through the
+     * monitor anchor, as heartbeat rows carry no tenant_id column)
+     * @param {number} tenantId ID of the tenant
+     * @returns {Promise<Bean[]>} List of heartbeat beans ordered by id
+     */
+    static async listForTenant(tenantId) {
+        return await R.getAll(
+            "SELECT heartbeat.* FROM heartbeat, monitor WHERE heartbeat.monitor_id = monitor.id AND monitor.tenant_id = ? ORDER BY heartbeat.id",
+            [tenantId]
+        );
     }
 }
 

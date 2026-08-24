@@ -71,6 +71,23 @@ class APIKey extends BeanModel {
 
         return bean;
     }
+
+    /**
+     * Tenant this API key belongs to (G1 multi-tenant model)
+     * @returns {number|null} tenant_id column value
+     */
+    get tenantId() {
+        return this.tenant_id;
+    }
+
+    /**
+     * List all API keys belonging to a tenant
+     * @param {number} tenantId ID of the tenant
+     * @returns {Promise<Bean[]>} List of API key beans ordered by id
+     */
+    static async listForTenant(tenantId) {
+        return await R.findMany("api_key", " tenant_id = ? ORDER BY id ", [tenantId]);
+    }
 }
 
 module.exports = APIKey;

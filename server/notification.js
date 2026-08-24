@@ -313,6 +313,18 @@ class Notification {
     }
 
     /**
+     * List all raw notification rows belonging to a tenant.
+     * Repo delta vs kanban task-08: there is no server/model/notification.js —
+     * notifications use plain RedBean beans (R.dispense("notification")) in this
+     * class, so this returns rows (not BeanModel instances).
+     * @param {number} tenantId ID of the tenant
+     * @returns {Promise<object[]>} List of notification rows ordered by id
+     */
+    static async listForTenant(tenantId) {
+        return await R.getAll("SELECT * FROM notification WHERE tenant_id = ? ORDER BY id", [tenantId]);
+    }
+
+    /**
      * Check if apprise exists
      * @returns {Promise<boolean>} Does the command apprise exist?
      */
