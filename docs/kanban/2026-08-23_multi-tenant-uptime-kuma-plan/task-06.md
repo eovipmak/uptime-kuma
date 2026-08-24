@@ -1,7 +1,7 @@
 # Task G1.06 — Default-Tenant Seeding & Backward-Compatible Backfill
 
 **Phase:** G1 — Data Model & Migration
-**Status:** todo
+**Status:** completed
 **Reviewer:** Tech lead / Uptime Kuma maintainer (database domain)
 
 ## Objective
@@ -126,3 +126,11 @@ Uptime Kuma tech lead (database domain) — **this is the central backward-compa
 - **Do not** add a feature flag for "single-tenant mode" — the plan's isolation model assumes one default tenant absorbs legacy data; no mode switch required.
 - **Do not** backfill `stat_minutely` / `stat_daily` if they do not have a `tenant_id` column (decided in task-05 per the contract) — if they do, this task must backfill them too via `monitor.tenant_id`, which can be derived per row via a join.
 - **Do not** implement audit logging for the backfill — G9 territory.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-25T03:30:00Z
+- Verification: Full functional verification on SQLite fixtures via the repo's own knex + @louislam/sqlite3 stack (61 assertions, all passing). (1) Populated upgrade path: legacy baseline (knex_init_db) + pre-G1 migration ledger seeded, 2 users (incl. one `active = 0` — contract Clause D.3 backfills every existing user) and rows in all ten Clause-B tables + heartbeat child row; full chain migrate.latest → default tenant created (`Default Tenant`/`default`/free/active), every table's rows have `tenant_id = default`, zero business-row loss, heartbeat untouched (no tenant_id column per ADR-0002). (2) Idempotency: re-running exports.up directly is a no-op (1 tenant, no duplicate memberships). (3) Rollback safety: exports.down detaches only rows pointing at the default tenant, deletes only its memberships then the tenant row; business counts identical before/after. (4) down→up cycle lands on identical logical state. (5) Fresh install: empty DB through the chain seeds the default tenant with zero memberships; simulated post-migration admin creation + `seedDefaultTenantIfEmpty()` hook attaches it as `tenant_admin`. Gates: `node ./extra/check-knex-filenames.mjs` OK; `npx eslint` clean on both files; repo `lint:js` 0 errors (72 pre-existing warnings); `npm run tsc` exit 0; backend suite has 34 failures confirmed byte-identical on master (missing oracledb/postgres drivers, RDAP/external services — environmental, not a regression). Scope: PR touches exactly the two allowed paths.
+- Decisions recorded: **NOT-NULL tightening DEFERRED to G4** (contract open item C1) — current application code still INSERTs business rows without tenant_id until the G4 wrapper enforces injection; flipping now would break every such write and violate backward compat. No `2026-08-23-0003-tighten-tenant-id-not-null.js` created. **Integration-point note (task step 8):** knex migrations run inside `Database.patch()` (server/database.js, outside this task's allowed paths); `server/setup-database.js` therefore exposes `seedDefaultTenantIfEmpty()` as the documented post-migration seeding hook (consumed by G2/task-09's fresh-install admin setup), reusing the migration module's exported implementation — no duplicated seed logic, and SetupDatabase itself never touches a DB connection before configuration completes.
+- Commit or artifact reference: PR #12 (squash-merged e96533e7417bfcfd560e81067dc1de1467547c4b), branch `feat/g1-06-default-tenant-backfill`.
