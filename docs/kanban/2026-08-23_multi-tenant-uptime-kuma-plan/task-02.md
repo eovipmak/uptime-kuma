@@ -1,7 +1,7 @@
 # Task G0.02 — Architecture Decision Records (ADRs) for Multi-Tenancy
 
 **Phase:** G0 — Foundation (Survey & Design)
-**Status:** todo
+**Status:** completed
 **Reviewer:** Tech lead / Uptime Kuma maintainer
 
 ## Objective
@@ -117,3 +117,10 @@ Uptime Kuma tech lead / maintainer. Reviewer should specifically challenge: (a) 
 - **Do not** choose observability stack (OpenTelemetry, Grafana) — G9 territory.
 - **Do not** modify production source or run migrations.
 - **Do not** reopen ADRs after team signoff in this task; that is a separate process.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-24T20:30:00Z
+- Verification: all 5 spec verification commands pass — (1) all four ADR files exist under `docs/adr/` (+ `README.md` index); (2) every ADR contains verbatim `## Context`, `## Decision`, `## Consequences`, `## Alternatives`; (3) every ADR has `Status: Proposed`, `Date: 2026-08-23`, and a `Deciders:` line at column 0; (4) each ADR cites G0.01 survey artifacts (`database-schema.md`, `monitoring-engine.md`, `api-and-socket-events.md`) with concrete file:line evidence; (5) `git status --short` shows only `docs/adr/` additions + this task file — zero source changes. Decisions recorded: PostgreSQL target DB with SQLite retained for backward compat (ADR-0001); shared schema + `tenant_id` per plan (ADR-0002); Caddy reference edge + exact plan priority subdomain → custom domain → X-Tenant-ID → session/JWT claim, with spoofing guard on the header step (ADR-0003); JWT access + rotating refresh with middleware-authoritative tenant resolution and the plan's frozen 4-role RBAC matrix (ADR-0004).
+- Commit or artifact reference: PR from branch `feat/g0-02-adrs` (squash merge to master).
