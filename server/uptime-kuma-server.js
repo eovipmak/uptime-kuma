@@ -13,6 +13,7 @@ const childProcessAsync = require("promisify-child-process");
 const path = require("path");
 const axios = require("axios");
 const { isSSL, sslKey, sslCert, sslKeyPassphrase } = require("./config");
+const { userRoom } = require("./socket-handlers/tenant-room");
 // DO NOT IMPORT HERE IF THE MODULES USED `UptimeKumaServer.getInstance()`, put at the bottom of this file instead.
 
 /**
@@ -551,6 +552,37 @@ class UptimeKumaServer {
     disconnectAllSocketClients(userID, currentSocketID = undefined) {
         for (const socket of this.io.sockets.sockets.values()) {
             if (socket.userID === userID && socket.id !== currentSocketID) {
+                try {
+                    socket.emit("refresh");
+                    socket.disconnect();
+                } catch (e) {}
+            }
+        }
+    }
+
+    /**
+     * Force connected sockets of a user to refresh and disconnect, but only
+     * within a single tenant. Used when a user is removed from a tenant
+     * (G2.12 force-logout): their sessions in other tenants stay alive,
+     * unlike password reset which invalidates every session cross-tenant
+     * via disconnectAllSocketClients().
+     * Targets sockets joined to the user room key from
+     * server/socket-handlers/tenant-room.js (`t${tenantId}:u${userId}`);
+     * before G2.11 room wiring lands this matches nothing and is a no-op.
+     * @param {number} tenantId Tenant id
+     * @param {string} userID User ID
+     * @param {string?} currentSocketID Current socket ID to keep alive
+     * @returns {void}
+     */
+    disconnectAllSocketClientsForTenant(tenantId, userID, currentSocketID = undefined) {
+        const userRoomKey = userRoom(tenantId, userID);
+        for (const socket of this.io.sockets.sockets.values()) {
+            if (
+                socket.tenantID === tenantId
+                && socket.userID === userID
+                && socket.rooms.has(userRoomKey)
+                && socket.id !== currentSocketID
+            ) {
                 try {
                     socket.emit("refresh");
                     socket.disconnect();
