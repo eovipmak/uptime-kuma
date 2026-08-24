@@ -2078,6 +2078,37 @@ class Monitor extends BeanModel {
             await checkCertExpiryNotifications(this, tlsInfo);
         }
     }
+
+    /**
+     * Tenant this monitor belongs to (G1 multi-tenant model)
+     * @returns {number|null} tenant_id column value
+     */
+    get tenantId() {
+        return this.tenant_id;
+    }
+
+    /**
+     * List all monitors belonging to a tenant
+     * @param {number} tenantId ID of the tenant
+     * @returns {Promise<Bean[]>} List of monitor beans ordered by id
+     */
+    static async listForTenant(tenantId) {
+        return await R.findMany("monitor", " tenant_id = ? ORDER BY id ", [tenantId]);
+    }
+
+    /**
+     * List monitors of a tenant filtered by owner user (preserves the
+     * legacy per-user ownership filtering on top of tenant scoping)
+     * @param {number} tenantId ID of the tenant
+     * @param {number} userId ID of the owning user
+     * @returns {Promise<Bean[]>} List of monitor beans ordered by id
+     */
+    static async listForTenantAndUser(tenantId, userId) {
+        return await R.findMany("monitor", " tenant_id = ? AND user_id = ? ORDER BY id ", [
+            tenantId,
+            userId,
+        ]);
+    }
 }
 
 module.exports = Monitor;

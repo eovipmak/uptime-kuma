@@ -44,6 +44,23 @@ class Group extends BeanModel {
             )
         );
     }
+
+    /**
+     * Tenant this group belongs to (G1 multi-tenant model)
+     * @returns {number|null} tenant_id column value
+     */
+    get tenantId() {
+        return this.tenant_id;
+    }
+
+    /**
+     * List all groups belonging to a tenant
+     * @param {number} tenantId ID of the tenant
+     * @returns {Promise<Bean[]>} List of group beans ordered by id
+     */
+    static async listForTenant(tenantId) {
+        return await R.findMany("group", " tenant_id = ? ORDER BY id ", [tenantId]);
+    }
 }
 
 module.exports = Group;

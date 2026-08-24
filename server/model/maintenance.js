@@ -501,6 +501,23 @@ class Maintenance extends BeanModel {
             this.duration = this.calcDuration();
         }
     }
+
+    /**
+     * Tenant this maintenance window belongs to (G1 multi-tenant model)
+     * @returns {number|null} tenant_id column value
+     */
+    get tenantId() {
+        return this.tenant_id;
+    }
+
+    /**
+     * List all maintenance windows belonging to a tenant
+     * @param {number} tenantId ID of the tenant
+     * @returns {Promise<Bean[]>} List of maintenance beans ordered by id
+     */
+    static async listForTenant(tenantId) {
+        return await R.findMany("maintenance", " tenant_id = ? ORDER BY id ", [tenantId]);
+    }
 }
 
 module.exports = Maintenance;

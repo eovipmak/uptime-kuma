@@ -1,4 +1,5 @@
 const { BeanModel } = require("redbean-node/dist/bean-model");
+const { R } = require("redbean-node");
 
 class Proxy extends BeanModel {
     /**
@@ -19,6 +20,23 @@ class Proxy extends BeanModel {
             default: !!this._default,
             createdDate: this._created_date,
         };
+    }
+
+    /**
+     * Tenant this proxy belongs to (G1 multi-tenant model)
+     * @returns {number|null} tenant_id column value
+     */
+    get tenantId() {
+        return this.tenant_id;
+    }
+
+    /**
+     * List all proxies belonging to a tenant
+     * @param {number} tenantId ID of the tenant
+     * @returns {Promise<Bean[]>} List of proxy beans ordered by id
+     */
+    static async listForTenant(tenantId) {
+        return await R.findMany("proxy", " tenant_id = ? ORDER BY id ", [tenantId]);
     }
 }
 
