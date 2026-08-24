@@ -31,7 +31,7 @@ and exits non-zero **before opening any database connection** — zero DB writes
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `NODE_ENV=development`    | Allows the seed to run (guard). With `npm run dev` conventions, SQLite lands in the branch dev-data dir when on a non-master branch.  |
 | `UPTIME_KUMA_DEMO_SEED=1` | Allows the seed to run (guard) even outside development mode.                                                                        |
-| `UPTIME_KUMA_DEMO_SEED_DB`| Optional path to an isolated SQLite file (e.g. `./data/demo-seed-test.db`). When set, the seed targets that file instead of the normal `<data-dir>/kuma.db`. SQLite only — if that directory's `db-config.json` declares another DB type, the runner exits before connecting. |
+| `UPTIME_KUMA_DEMO_SEED_DB`| Optional path to an isolated SQLite file (e.g. `./data/demo-seed-test.db`). When set, the seed targets that file instead of the normal `<data-dir>/kuma.db`. SQLite only — if that directory's `db-config.json` declares another DB type, the runner exits before connecting; if the directory has no `db-config.json` yet, the runner writes one declaring SQLite. |
 
 Without `UPTIME_KUMA_DEMO_SEED_DB`, the seed uses the normal data dir resolution of `server/database.js` (`DATA_DIR` env → branch dev-data dir in dev mode → `./data/`) and whatever database type is configured there, including MariaDB.
 
