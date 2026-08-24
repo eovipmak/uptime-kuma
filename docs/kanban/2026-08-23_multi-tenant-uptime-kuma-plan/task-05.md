@@ -8,6 +8,8 @@
 
 Add a nullable `tenant_id` foreign key column to each of the twelve tenant-scoped domain tables listed in the plan's G1 table, plus the composite indexes mandated by ADR-0002 (`(tenant_id, id)`, `(tenant_id, monitor_id)`, etc.). This is the structural prerequisite for `task-06` (backfill) and for every downstream phase that filters by tenant. The column is **nullable** at the migration layer so empty/default-tenant rows remain valid before `task-06` runs the backfill — `task-06` will populate every existing row and decide whether to flip the column to `NOT NULL`.
 
+> **Coordinator note (G0.03, 2026-08-24):** The example index list in this file predates ADR-0002's final decision. Per `docs/architecture/migration-contract.md` (authoritative), `tenant_id` columns go on the **ten business tables only** (`monitor`, `group`, `proxy`, `docker_host`, `notification`, `status_page`, `maintenance`, `api_key`, `tag`, `remote_browser`). Child/junction tables (`heartbeat`, `stat_*`, `monitor_tag`, `monitor_notification`, `monitor_tls_info`, `incident`, `monitor_group`, …) get **no** redundant `tenant_id` — they use the anchor-subquery pattern, so the `heartbeat` / `monitor_tag` / `monitor_notification` / `incident` entries in the step-5 example list are superseded. Implement exactly what the migration contract enumerates; stop and report if contract and plan text disagree.
+
 ## Prerequisites/dependencies
 
 - **Task G1.04** reviewed and approved — the `tenant` table must exist as the FK target. Adding `.references("id").inTable("tenant")` against a non-existent table will fail the migration.
