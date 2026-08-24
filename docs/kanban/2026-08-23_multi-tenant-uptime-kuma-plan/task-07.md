@@ -1,7 +1,7 @@
 # Task G1.07 — Seed Script for 3 Demo Tenants (Dev/Staging Only)
 
 **Phase:** G1 — Data Model & Migration
-**Status:** todo
+**Status:** done
 **Reviewer:** Dev-experience lead / Uptime Kuma maintainer
 
 ## Objective
@@ -131,3 +131,10 @@ Dev-experience lead / maintainer. Reviewer specifically confirms:
 - **Do not** add billing/pricing fields beyond the `plan = "free"` placeholder.
 - **Do not** change CI workflows to auto-run the seed (per `.github/workflows/auto-test.yml`) — running this seed in CI belongs to a separate decision in G11.
 - **Do not** commit the demo SQLite DB file under `data/` (it is gitignored; verify with `git check-ignore data/demo-seed-test.db`).
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle) — kanban-task-coordinator
+- Completed at: 2026-08-24T22:45:00Z
+- Verification: isolated worktree at PR head b0fe9a43, Node 22. (1) Guard: `env -u NODE_ENV -u UPTIME_KUMA_DEMO_SEED npm run seed:tenant-demo` → exit 1, exact refusal message, zero writes, no connection. (2) Smoke seed vs VACUUM INTO snapshot of dev DB (`UPTIME_KUMA_DEMO_SEED_DB=./data/smoke.db UPTIME_KUMA_DEMO_SEED=1 npm run seed:tenant-demo`) → created tenant=3 tenant_user=3 monitor=6 notification=3 tag=6 monitor_tag=6. (3) Re-run → created all 0, skipped all (idempotent). (4) DB checks: 0 NULL tenant_id on monitor/notification/tag/tenant_user; monitor_tag carries none by design; tenants acme/xyz/123-org with plan=free status=active. (5) Admin-missing copy → actionable setup-wizard error, aborts cleanly. (6) `node extra/check-package-json.mjs` OK on Node 22 (fails to parse on env's default Node 18 — pre-existing, import-attributes syntax); eslint clean on both scripts. Scope: only the 4 owned files changed.
+- Commit or artifact reference: PR #15 merged as c4bbf206 (squash, includes WAL-mode runner fix b0fe9a43)
