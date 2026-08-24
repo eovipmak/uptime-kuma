@@ -147,7 +147,8 @@ const { initBackgroundJobs, stopBackgroundJobs } = require("./jobs");
 const { loginRateLimiter, twoFaRateLimiter } = require("./rate-limiter");
 
 const { apiAuth } = require("./auth");
-const { login } = require("./auth");
+const { login, listTenantsForUser } = require("./auth");
+const { seedDefaultTenantIfEmpty } = require("./setup-database");
 const passwordHash = require("./password-hash");
 
 const { Prometheus } = require("./prometheus");
@@ -416,14 +417,47 @@ let needSetup = false;
                         throw new Error("The token is invalid due to password change or old token");
                     }
 
+                    // G2 task-09: validate the token's tenant claim server-side
+                    // (no client trust) against the tenant_user membership.
+                    let tenants = await listTenantsForUser(user.id);
+
+                    if (tenants.length === 0) {
+                        // Edge case: user was removed from every tenant.
+                        log.info("auth", `User ${decoded.username} does not belong to any tenant. IP=${clientIP}`);
+
+                        callback({
+                            ok: false,
+                            msg: "authNoTenants",
+                            msgi18n: true,
+                        });
+                        return;
+                    }
+
+                    let membership = tenants.find((tenant) => tenant.id === decoded.tid);
+
+                    if (!membership) {
+                        // Token has no tid claim (pre-G2 token) or the user no longer
+                        // belongs to that tenant: fall back to the first accessible
+                        // tenant and re-issue a refreshed JWT below.
+                        membership = tenants[0];
+                    }
+
+                    let issuedToken = token;
+                    if (membership.id !== decoded.tid) {
+                        issuedToken = User.createJWT(user, membership.id, membership.role, server.jwtSecret);
+                    }
+
                     log.debug("auth", "afterLogin");
-                    await afterLogin(socket, user);
+                    await afterLogin(socket, user, membership.id);
                     log.debug("auth", "afterLogin ok");
 
                     log.info("auth", `Successfully logged in user ${decoded.username}. IP=${clientIP}`);
 
                     callback({
                         ok: true,
+                        token: issuedToken,
+                        tenants,
+                        activeTenantId: membership.id,
                     });
                 } else {
                     log.info("auth", `Inactive or deleted user ${decoded.username}. IP=${clientIP}`);
@@ -471,13 +505,29 @@ let needSetup = false;
 
             if (user) {
                 if (user.twofa_status === 0) {
-                    await afterLogin(socket, user);
+                    // G2 task-09: build the tenant list for the client-side picker.
+                    let tenants = await listTenantsForUser(user.id);
+
+                    if (tenants.length === 0) {
+                        log.info("auth", `User ${data.username} does not belong to any tenant. IP=${clientIP}`);
+
+                        callback({
+                            ok: false,
+                            msg: "authNoTenants",
+                            msgi18n: true,
+                        });
+                        return;
+                    }
+
+                    await afterLogin(socket, user, tenants[0].id);
 
                     log.info("auth", `Successfully logged in user ${data.username}. IP=${clientIP}`);
 
                     callback({
                         ok: true,
-                        token: User.createJWT(user, server.jwtSecret),
+                        token: User.createJWT(user, tenants[0].id, tenants[0].role, server.jwtSecret),
+                        tenants,
+                        activeTenantId: tenants[0].id,
                     });
                 }
 
@@ -493,7 +543,21 @@ let needSetup = false;
                     let verify = notp.totp.verify(data.token, user.twofa_secret, twoFAVerifyOptions);
 
                     if (user.twofa_last_token !== data.token && verify) {
-                        await afterLogin(socket, user);
+                        // G2 task-09: build the tenant list for the client-side picker.
+                        let tenants = await listTenantsForUser(user.id);
+
+                        if (tenants.length === 0) {
+                            log.info("auth", `User ${data.username} does not belong to any tenant. IP=${clientIP}`);
+
+                            callback({
+                                ok: false,
+                                msg: "authNoTenants",
+                                msgi18n: true,
+                            });
+                            return;
+                        }
+
+                        await afterLogin(socket, user, tenants[0].id);
 
                         await R.exec("UPDATE `user` SET twofa_last_token = ? WHERE id = ? ", [
                             data.token,
@@ -504,7 +568,9 @@ let needSetup = false;
 
                         callback({
                             ok: true,
-                            token: User.createJWT(user, server.jwtSecret),
+                            token: User.createJWT(user, tenants[0].id, tenants[0].role, server.jwtSecret),
+                            tenants,
+                            activeTenantId: tenants[0].id,
                         });
                     } else {
                         log.warn("auth", `Invalid token provided for user ${data.username}. IP=${clientIP}`);
@@ -721,10 +787,17 @@ let needSetup = false;
 
                 needSetup = false;
 
+                // G2 task-09: make a brand-new install multi-tenant ready. The G1
+                // seeding helper is idempotent and creates the default tenant plus
+                // the tenant_user row (role=tenant_admin) for this first admin.
+                let defaultTenantId = await seedDefaultTenantIfEmpty();
+
                 callback({
                     ok: true,
                     msg: "successAdded",
                     msgi18n: true,
+                    token: User.createJWT(user, defaultTenantId, "tenant_admin", server.jwtSecret),
+                    activeTenantId: defaultTenantId,
                 });
             } catch (e) {
                 callback({
@@ -1460,9 +1533,14 @@ let needSetup = false;
 
                 server.disconnectAllSocketClients(user.id, socket.id);
 
+                // G2 task-09: re-issue the JWT with a fresh password-hash claim while
+                // keeping the session's tenant claims stable.
+                let tenants = await listTenantsForUser(user.id);
+                let membership = tenants.find((tenant) => tenant.id === socket.tenantID) ?? tenants[0];
+
                 callback({
                     ok: true,
-                    token: User.createJWT(user, server.jwtSecret),
+                    token: User.createJWT(user, membership?.id, membership?.role, server.jwtSecret),
                     msg: "successAuthChangePassword",
                     msgi18n: true,
                 });
@@ -1823,10 +1901,23 @@ async function checkOwner(userID, monitorID) {
  * This function is used to send the heartbeat list of a monitor.
  * @param {Socket} socket Socket.io instance
  * @param {object} user User object
+ * @param {number} tenantID Active tenant for the session (G2 task-09). Optional:
+ * when omitted, it is resolved as the user's first accessible tenant
+ * (e.g. the auto-login path). The room-key reshape to tenant-partitioned rooms
+ * is G2/task-11; this only records the active tenant on the socket.
  * @returns {Promise<void>}
  */
-async function afterLogin(socket, user) {
+async function afterLogin(socket, user, tenantID) {
     socket.userID = user.id;
+
+    // G2 task-09: remember the active tenant on the socket. Consumed by task-11.
+    if (tenantID !== undefined) {
+        socket.tenantID = tenantID;
+    } else if (socket.tenantID === undefined && user?.id != null) {
+        const tenants = await listTenantsForUser(user.id);
+        socket.tenantID = tenants[0]?.id ?? null;
+    }
+
     socket.join(user.id);
 
     let monitorList = await server.sendMonitorList(socket);
