@@ -1,7 +1,7 @@
 # Task G1.04 — Tenant Schema Foundation (tenant / tenant_user / tenant_invitation)
 
 **Phase:** G1 — Data Model & Migration
-**Status:** todo
+**Status:** completed
 **Reviewer:** Tech lead / Uptime Kuma maintainer (database domain)
 
 ## Objective
@@ -145,3 +145,10 @@ Uptime Kuma tech lead (database domain). Reviewer specifically confirms:
 - **Do not** alter any existing model (`user.js`, `monitor.js`, …) — handled in `task-08` or later phases.
 - **Do not** add billing fields beyond `plan` placeholder — G8 territory.
 - **Do not** modify frontend, notification providers, monitor types, or status page router.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-24T19:11:53Z
+- Verification: PR #9 review by CTO — code read (migration is knex-methods-only, dialect-safe; down() drops in reverse-FK order invitation -> tenant_user -> tenant; models are BeanModel shells + parameterized `TenantUser.listForUser`), eslint 0 errors on repo, `npm run tsc` clean, backend suite on branch: 224 tests / 202 pass / 6 fail / 16 cancelled with failure set byte-identical to pristine-master worktree baseline (env-only: oracledb/postgres containers, node18 ERR_REQUIRE_ESM unlimited-timeout, RDAP network tests) — zero regressions. Merged squash as 26782e61.
+- Commit or artifact reference: branch `feat/g1-04-tenant-tables`, PR #9, master merge commit 26782e61e2bb42d82599783627517d2a30ca874e. Post-merge server restart delegated to QA (Paperclip issue KUM-21).
