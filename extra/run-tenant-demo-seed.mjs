@@ -54,7 +54,9 @@ if (customDbPath) {
 let exitCode = 0;
 
 try {
-    await Database.connect(true);
+    // Not testMode: seed real dev databases with the same WAL journaling the
+    // server uses (crash-safe), not the throwaway MEMORY mode tests use.
+    await Database.connect(false);
     await Database.patch();
 
     const summary = await seed(R.knex);
