@@ -12,3 +12,11 @@ Foundational ADRs for the multi-tenant Uptime Kuma fork (plan phase G0.02). Each
 Evidence base: the G0.01 AS-IS survey under [`docs/architecture/survey/`](../architecture/survey/) — `database-schema.md`, `api-and-socket-events.md`, `monitoring-engine.md`, `file-impact-map.md`.
 
 Consumers: task G0.03 merges these decisions into the TO-BE ERD and architecture diagram. The "Decision" section of each ADR is the contract later phases must respect.
+
+## Phase divergences (recorded during execution)
+
+Divergences between an ADR's target design and what a phase actually implements, ruled on by the CTO at coordination time. ADRs themselves stay unchanged after signoff; deltas land here.
+
+| Phase | ADR | Divergence | Ruling |
+| --- | --- | --- | --- |
+| G2 | ADR-0004 | Kanban task-09 freezes JWT claims as `{ username, h, tid, role }` via extended `User.createJWT`, keeping the existing `server.jwtSecret`; no refresh-token table, no expiry change | ADR-0004's `{ sub, tid, role, jti, exp }` + rotating-refresh design is deferred; claims evolve additively only (`jti`/`exp` hardening may land later without renaming existing fields). Authoritative for G2: `task-09.md` step 2. |

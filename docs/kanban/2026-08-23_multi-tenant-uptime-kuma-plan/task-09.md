@@ -16,6 +16,8 @@ This task is the contract originator for the rest of G2: every later task reads 
 - **G0 ADRs:** `docs/adr/ADR-0003-routing-and-tenant-resolution.md` and `docs/adr/ADR-0004-authentication-strategy.md` approved — the JWT claims and token-vs-session decisions live there.
 - **If any prerequisite is incomplete:** stop, report the blocker ("Waiting on G1.04/06/08 and ADR-0003/0004 signoff"), do not guess claim shape.
 
+> **CTO ruling (2026-08-25, phase-G2 scope):** ADR-0004's target design (claims `{ sub, tid, role, jti, exp }`, ~15-min expiry, rotating refresh-token table) is **superseded for this phase** by the contract frozen in step 2 below: claims `{ username, h, tid, role }` issued via an extended `User.createJWT(user, tenantId, role, jwtSecret)`, existing `server.jwtSecret`, no refresh-token table, no expiry change. Rationale: zero-cost constraint and incremental migration; current session mechanics are kept and tenancy claims are added additively. Later phases may extend claims **additively only** (incl. `jti`/`exp` hardening) — never rename or remove existing fields. This divergence is recorded in `docs/adr/README.md`; note it in the PR description as well.
+
 ## Owner / recommended agent profile
 
 **Auth engineer (backend)** — strong working knowledge of `jsonwebtoken`, Uptime Kuma's auth flow (`server/auth.js`, `server/server.js` `socket.on("login")`/`socket.on("loginByToken")`), and RedBean queries. Must not break the existing 2FA flow.
@@ -32,7 +34,7 @@ This task is the contract originator for the rest of G2: every later task reads 
 
 ## Concrete implementation steps
 
-1. Re-read `docs/adr/ADR-0004-authentication-strategy.md`. Its "Decision" section states whether `tenant_id` lives in the JWT claim at issue time (this is the claim that ADR-0003's middleware will treat as the lowest-priority resolver). Implement that exact shape.
+1. Re-read `docs/adr/ADR-0004-authentication-strategy.md`. Its "Decision" section states whether `tenant_id` lives in the JWT claim at issue time (this is the claim that ADR-0003's middleware will treat as the lowest-priority resolver). Implement that exact shape — **as refined by the CTO ruling in Prerequisites above: the step-2 contract (`{ username, h, tid, role }`) is authoritative for G2**, not ADR-0004's refresh-token design.
 2. **`User.createJWT(user, tenantId, role, jwtSecret)`:**
    ```js
    return jwt.sign({
