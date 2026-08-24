@@ -24,28 +24,28 @@ The plan mandates **backward compatibility**: existing single-user SQLite instal
 
 ## Decision
 
-Adopt **PostgreSQL (v16+)** as the target database engine for multi-tenant deployments, accessed through the existing Knex stack (`pg` dialect). Keep **SQLite** as the default engine for single-tenant/personal installations, preserving the upstream out-of-box experience. MariaDB/MySQL retains legacy read support but is not the recommended multi-tenant engine.
+Adopt **MariaDB (MySQL-compatible) as the target database engine for multi-tenant deployments**, accessed through the existing Knex + redbean-node stack with the already-bundled `mysql2` driver. Keep **SQLite** as the default engine for single-tenant/personal installations, preserving the upstream out-of-box experience.
 
-Deciding factors for PostgreSQL over MySQL/MariaDB:
+Deciding factors for MariaDB over PostgreSQL:
 
-1. **Partial indexes** — PostgreSQL natively supports the `WHERE important = 1` partial-index shape that migration `2025-12-22-0121` introduced on SQLite for `heartbeat`. The optimized index design ports 1:1 instead of degrading to full composite indexes.
-2. **Row-Level Security (RLS)** — PostgreSQL offers policy-based row filtering, usable as defense-in-depth *beneath* the application-level `tenant_id` filter (ADR-0002). MySQL has no equivalent.
-3. **MVCC concurrency** — readers never block writers; heartbeat inserts from many tenants proceed without the table-level lock contention that InnoDB can exhibit on high-churn secondary indexes.
-4. **Stack fit** — Knex first-class `pg` dialect; JSONB for the brotli/structured response payloads currently stuffed into `text` columns; mature zero-cost hosting (any VPS, Docker).
+1. **redbean-node does not support PostgreSQL — this is dispositive.** The ORM behind every model (`server/model/*.js`, `uptime-calculator.js`, `notification.js`) is `redbean-node ~0.3.3`, whose supported engines are exactly MySQL/MariaDB and SQLite (its README lists only those; its dist contains zero Postgres/`pg` dialect code). Choosing PostgreSQL would mean rewriting the entire data-access layer — work no G-phase task scopes — to reach the same isolation guarantees we already plan at the application layer (ADR-0002).
+2. **MariaDB is the only exercised non-SQLite path.** All 58 Knex migrations already carry SQLite-vs-MariaDB dialect branches where outcomes differ (e.g., migration `2025-12-22-0121` gives SQLite partial indexes, MariaDB regular composites), and CI harnesses MariaDB via `@testcontainers/mariadb`. Adopting MariaDB extends a proven path instead of validating a third dialect.
+3. **Driver cost is zero.** `mysql2 ~3.11.5` is already a dependency; both Knex (`~3.1.0`) and redbean-node speak it natively.
+4. What we forgo versus PostgreSQL is acceptable here: partial indexes (MariaDB uses full composite indexes on `heartbeat` — the pre-existing upstream behavior on that engine) and native RLS (isolation is instead enforced by the G4 tenant-safe repository wrapper plus composite FKs per ADR-0002, with IDOR tests from G4 onward).
 
-Risk flagged for G1: **redbean-node driver coverage for PostgreSQL must be verified in a G1 spike.** If any redbean code path lacks a working `pg` driver, the G1 tenant-safe repository wrapper (plan phase G4 predecessor work) routes those calls through Knex query-builder methods instead. This spike gates the final driver layout but does not change the engine choice.
+Backward compatibility: existing single-user SQLite installations keep working unchanged in single-tenant mode (default tenant, see ADR-0002); multi-tenant mode requires a MariaDB connection, enforced at setup.
 
 ## Consequences
 
-- **Driver choice:** `pg` (node-postgres) via Knex; connection pooling configured per deployment (PgBouncer optional, still zero-cost). A redbean↔pg compatibility spike is required early in G1.
-- **Migration tooling:** all 58 existing Knex migrations already run under Knex dialects; new migrations must avoid raw SQL that is dialect-specific (per `db/knex_migrations/README.md` rules). Fresh-install baseline (`knex_init_db.js`) gains a PostgreSQL variant path.
-- **Operational burden:** multi-tenant operators now run a Postgres service (backup via `pg_dump`, point-in-time recovery available). Single-tenant SQLite users are unaffected — this preserves the backward-compatibility mandate.
-- **Backward compatibility:** SQLite remains fully supported; the G1 migration framework must produce dialect-aware column definitions (e.g., `timestamptz` on PG, integer epoch on SQLite) exactly as the existing MariaDB-vs-SQLite branches already do.
-- **Performance:** heartbeat/stat write paths gain headroom; the nightly retention `DELETE` benefits from PG autovacuum instead of SQLite incremental-vacuum jobs.
+- **Driver choice:** no change — `mysql2` via the existing stack; connection pooling sized against concurrent beat-loop counts becomes an operational parameter we own.
+- **Migration tooling:** unchanged mechanics; new migrations must keep satisfying the dual-dialect rule (SQLite + MariaDB) per `db/knex_migrations/README.md`, reusing the established dialect-branch pattern.
+- **Operational burden:** multi-tenant operators run a MariaDB service (`mariadb-dump`/`mysqldump` backups); single-tenant SQLite users are unaffected — this preserves the backward-compatibility mandate.
+- **Index parity gap:** the SQLite-only partial indexes on `heartbeat` have no MariaDB equivalent; multi-tenant hot-path tuning relies on composite `(monitor_id, …)` / `(tenant-leading)` indexes (G1), not partial predicates.
+- **Performance:** heartbeat/stat write paths gain row-level MVCC concurrency over SQLite's single-writer lock; the nightly retention `DELETE` runs without WAL-bloat side effects.
 
 ## Alternatives
 
+- **PostgreSQL (rejected):** strongest paper feature set for tenancy — partial indexes port 1:1, native Row-Level Security as defense-in-depth beneath the app filter, mature MVCC. Rejected because redbean-node has **no PostgreSQL support at all** (README + dist evidence above), so it forces an unscoped ORM/data-layer rewrite across every model, calculator, and notification path. RLS through RedBean would additionally require setting session variables on every pooled connection from inside its pool management — high-risk plumbing with an app-layer substitute already planned (G4 wrapper).
 - **SQLite everywhere (rejected):** a single database-level write lock serializes heartbeat/stat upserts across all tenants; bulk retention deletes stall writers; WAL grows unbounded under sustained multi-tenant write pressure. Per `database-schema.md`, the codebase already needed partial-index surgery on SQLite just to keep `heartbeat` queries efficient for *one* tenant — N tenants compounds this.
-- **MariaDB/MySQL (rejected):** supported upstream today, but no partial indexes (loses the `heartbeat` optimization portability shown in migration `2025-12-22-0121`), no row-level security, and weaker JSON handling than PostgreSQL. Nothing in the multi-tenant requirements favors it over PostgreSQL.
 - **Database-per-tenant (rejected):** strongest isolation, but N databases means N backup/restore cycles, N migration executions per release (58 migrations × N), unbounded connection-pool growth, and painful fleet-wide queries for platform administration. Operationally incompatible with the project's zero-cost, single-appliance deployment model.
-- **Schema-per-tenant (rejected):** avoids some DB-per-tenant costs but breaks the Knex migration contract: the migration runner operates on a single schema namespace, so every deploy must replay migrations per tenant schema inside one transaction budget. Catalog churn (`pg_class` bloat / information_schema scans) and connection `search_path` management add failure modes with no benefit over a well-indexed `tenant_id` column.
+- **Schema-per-tenant (rejected):** avoids some DB-per-tenant costs but breaks the Knex migration contract: the migration runner operates on a single schema namespace, so every deploy must replay migrations per tenant schema inside one transaction budget. Catalog churn and connection `search_path` management add failure modes with no benefit over a well-indexed `tenant_id` column.
