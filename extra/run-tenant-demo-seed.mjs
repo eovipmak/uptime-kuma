@@ -47,6 +47,12 @@ if (customDbPath) {
         );
         process.exit(1);
     }
+    if (!existingConfig) {
+        // Materialize db-config.json: connect() only assigns
+        // Database.dbConfig when readDBConfig() succeeds, and patch()
+        // needs it to run patchSqlite() (baseline schema) on fresh DBs.
+        Database.writeDBConfig({ type: "sqlite" });
+    }
 } else {
     Database.initDataDir({});
 }
@@ -74,7 +80,13 @@ try {
     console.error(err.message);
     exitCode = 1;
 } finally {
-    await Database.close();
+    // Bound teardown: stray handles can keep the event loop alive after
+    // close(); the WAL checkpoint inside close() runs first, so a hard
+    // exit after the grace period is safe.
+    await Promise.race([
+        Database.close(),
+        new Promise((resolve) => setTimeout(resolve, 10000)),
+    ]);
 }
 
 process.exit(exitCode);
