@@ -22,7 +22,7 @@ async function createTables() {
         table.string("name", 255);
     });
 
-    // group
+    // group — tenant_id is added by migration 2026-08-23-0001 per multi-tenant plan; see docs/adr/ADR-0002
     await knex.schema.createTable("group", (table) => {
         table.increments("id");
         table.string("name", 255).notNullable();
@@ -33,7 +33,7 @@ async function createTables() {
         table.integer("status_page_id").unsigned();
     });
 
-    // proxy
+    // proxy — tenant_id is added by migration 2026-08-23-0001 per multi-tenant plan; see docs/adr/ADR-0002
     await knex.schema.createTable("proxy", (table) => {
         table.increments("id");
         table.integer("user_id").unsigned().notNullable();
@@ -62,7 +62,7 @@ async function createTables() {
         table.string("twofa_last_token", 6);
     });
 
-    // monitor
+    // monitor — tenant_id is added by migration 2026-08-23-0001 per multi-tenant plan; see docs/adr/ADR-0002
     await knex.schema.createTable("monitor", (table) => {
         table.increments("id");
         table.string("name", 150);
@@ -160,7 +160,7 @@ async function createTables() {
         table.integer("status_page_id").unsigned();
     });
 
-    // maintenance
+    // maintenance — tenant_id is added by migration 2026-08-23-0001 per multi-tenant plan; see docs/adr/ADR-0002
     await knex.schema.createTable("maintenance", (table) => {
         table.increments("id");
         table.string("title", 150).notNullable();
@@ -181,7 +181,7 @@ async function createTables() {
         table.index("user_id", "maintenance_user_id");
     });
 
-    // status_page
+    // status_page — tenant_id is added by migration 2026-08-23-0001 per multi-tenant plan; see docs/adr/ADR-0002
     await knex.schema.createTable("status_page", (table) => {
         table.increments("id");
         table.string("slug", 255).notNullable().unique().collate("utf8_general_ci");
@@ -292,7 +292,7 @@ async function createTables() {
         table.index("monitor_id", "monitor_id_index");
     });
 
-    // notification
+    // notification — tenant_id is added by migration 2026-08-23-0001 per multi-tenant plan; see docs/adr/ADR-0002
     await knex.schema.createTable("notification", (table) => {
         table.increments("id");
         table.string("name", 255);
@@ -325,7 +325,7 @@ async function createTables() {
         table.index(["monitor_id", "notification_id"], "monitor_notification_index");
     });
 
-    // tag
+    // tag — tenant_id is added by migration 2026-08-23-0001 per multi-tenant plan; see docs/adr/ADR-0002
     await knex.schema.createTable("tag", (table) => {
         table.increments("id");
         table.string("name", 255).notNullable();
@@ -439,6 +439,7 @@ async function createTables() {
             CONSTRAINT FK_user FOREIGN KEY ([user_id]) REFERENCES [user]([id]) ON DELETE CASCADE ON UPDATE CASCADE
         );
      */
+    // api_key — tenant_id is added by migration 2026-08-23-0001 per multi-tenant plan; see docs/adr/ADR-0002
     await knex.schema.createTable("api_key", function (table) {
         table.increments("id").primary();
         table.string("key", 255).notNullable();
