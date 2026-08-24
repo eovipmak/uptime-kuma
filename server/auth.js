@@ -4,6 +4,7 @@ const { R } = require("redbean-node");
 const { log } = require("../src/util");
 const { loginRateLimiter, apiRateLimiter } = require("./rate-limiter");
 const { Settings } = require("./settings");
+const TenantUser = require("./model/tenant_user");
 const dayjs = require("dayjs");
 
 /**
@@ -31,6 +32,27 @@ exports.login = async function (username, password) {
     }
 
     return null;
+};
+
+/**
+ * List all tenants a user belongs to, for the post-login tenant picker (G2 task-09).
+ * Delegates the query to TenantUser.listForUser() (G1 task-04/08) — the query is
+ * not re-implemented here. `custom_domain` is intentionally omitted from the
+ * payload: it is routing config, not user-facing data (G6 will surface the
+ * relevant subset later).
+ * @param {number} userId ID of the user
+ * @returns {Promise<object[]>} List of tenants shaped { id, slug, name, plan, role, is_default }
+ */
+exports.listTenantsForUser = async function (userId) {
+    const rows = await TenantUser.listForUser(userId);
+    return rows.map((row) => ({
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        plan: row.plan,
+        role: row.role,
+        is_default: row.slug === "default",
+    }));
 };
 
 /**
