@@ -1,7 +1,7 @@
 # Task G0.01 — Codebase & Database Schema Survey
 
 **Phase:** G0 — Foundation (Survey & Design)
-**Status:** todo
+**Status:** completed
 **Reviewer:** Tech lead / Uptime Kuma maintainer
 
 ## Objective
@@ -111,3 +111,10 @@ Uptime Kuma tech lead (or maintainer). Reviewer confirms:
 - **Do not** modify any file under `server/`, `src/`, `db/`, `config/`, `package.json`, or run any migration.
 - **Do not** run the dev server or rely on runtime introspection — static analysis only.
 - **Do not** enumerate notification providers (`server/notification-providers/`) beyond a single-line reference count — they are addressed in later phases.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-24T19:45:00Z
+- Verification: all 4 spec verification commands pass — (1) `git status --short` shows only `?? docs/architecture/`; (2) all 5 survey files present; (3) all 22 tables from `db/knex_init_db.js` + migration tables (`stat_minutely`, `stat_daily`, `stat_hourly`, `remote_browser`) found in `database-schema.md`; (4) all 10 files in `server/socket-handlers/` referenced in `api-and-socket-events.md`. Additional checks: REST route coverage exact (17 defined in routers = 17 documented: 8 `api-router.js` + 9 `status-page-router.js`); monitoring-engine.md cites scheduler bootstrap, both heartbeat writers, and notification dispatch with file paths + symbol names; file-impact-map.md covers all 12 G1 domains; tone scan for "should/must migrate/we will add" clean.
+- Commit or artifact reference: PR to master from branch `docs/g0-01-survey` (squash merge).
