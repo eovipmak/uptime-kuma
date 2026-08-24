@@ -142,3 +142,10 @@ Only after reviewer signoff, append the coordinator-status block and close Phase
 - **Do not** produce runbooks, deployment configs, or CI changes — those belong to G9..G12.
 - **Do not** make billing/pricing decisions — G8 territory.
 - **Do not** promise tooling (Redis, Caddy, Prometheus) as installed artifacts — the architecture diagram describes intent; procurement/installation happens in later phases.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-24T12:10:00Z
+- Verification: all 8 spec verification groups pass on branch `docs/g0-03-architecture` — (1) all seven files exist under `docs/architecture/`; (2) both ERDs contain valid ```mermaid erDiagram``` blocks (AS-IS renders all 27 documented tables incl. dropped `maintenance_timeslot`; TO-BE adds `tenant`, `tenant_user`, `tenant_invitation` with full column lists); (3) architecture-diagram.md contains a `flowchart` with the exact ADR-0003 resolveTenant priority chain and `(tenant_id : user_id)` socket rooms; (4) risk-mitigation.md registers R1–R14 with Source/Severity/Mitigation/Owning Phase columns; (5) migration-contract.md contains all six clauses (A new tables, B tenant_id tables, C indexes, D default-tenant seeding, E idempotency, F rollback-without-data-loss); (6) file-impact-list.md marks every entry `targeted`(40) or `unconfirmed`(24) with zero bare candidates; (7) `git status --short` shows docs-only changes — no source touched; (8) mmdc unavailable → structural lint done manually (fence balance, 27/10 entity counts verified via grep). Contract records ADR-0002 supersession of the plan's illustrative 12-table G1 list; kanban task-05.md annotated with a coordinator note pointing at the contract.
+- Commit or artifact reference: PR from branch `docs/g0-03-architecture` (squash merge to master).
