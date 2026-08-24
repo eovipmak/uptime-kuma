@@ -1,7 +1,7 @@
 # Task G1.08 — Model Relationships + Migration Tests (up/down)
 
 **Phase:** G1 — Data Model & Migration
-**Status:** todo
+**Status:** completed
 **Reviewer:** Backend lead / Uptime Kuma maintainer
 
 ## Objective
@@ -111,3 +111,11 @@ Backend lead / Uptime Kuma maintainer. Reviewer specifically confirms:
 - **Do not** touch the demo seed (`task-07`) — file ownership disjoint.
 - **Do not** add OpenTelemetry / audit logging — G9 territory.
 - **Do not** write e2e Playwright tests — that is G11.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-24T22:36:07Z
+- Verification: CTO review of PR #16 against this task file. (1) Helpers: all 11 listed models expose `get tenantId()` + `static async listForTenant(tenantId)` with JSDoc; `Monitor` also has `listForTenantAndUser(tenantId, userId)` per step 1. Grep gate OK for all 11 (`notification` resolved at `server/notification.js` — no `server/model/notification.js` exists in this repo; documented as ERD divergence D2). Existing public methods untouched (diffs purely additive). (2) New test `node --test test/backend-test/test-tenant-migration.js`: 2/2 pass on SQLite — fresh-schema assertions (tenant root tables queryable, tenant_id columns present, default tenant slug, tenant_admin membership), populated backfill, rollback of the seed step with zero `user`/`monitor` deletions and `tenant_id IS NULL`, re-migrate idempotency to identical end state. Rollback scope note accepted: knex unwinds a whole batch as one; targeted single-step down of 0002 is the only rollback under which acceptance criterion "(b) tenant_id IS NULL" is observable — full-batch rollback would also revert 0001/0000 owned by tasks 04/05. (3) Regression gate: per-file backend suite parity vs master — identical pass/fail sets on both branches; every failure reproduces byte-for-byte on unmodified master (Node 18 local runtime + shared node_modules ESM resolution; CI "Lint, tsc, build (Node 20)" green on the PR). No PR-caused regressions. (4) Lint clean on all touched files locally. (5) Scope gate: changed files = 10 model files + server/notification.js + test/backend-test/test-tenant-migration.js + docs/architecture/erd-realized.md — all within allowed set (server/notification.js is the notification model's actual home). (6) erd-realized.md mirrors TO-BE ERD, annotates producing migrations, records divergences D1–D3 each with rationale, cross-links erd-to-be.md.
+- Decisions recorded: `Notification.listForTenant` returns raw rows via `R.getAll` instead of beans because notifications are plain RedBean beans in `server/notification.js` (no BeanModel exists) — divergence D2. Heartbeat/Incident tenant helpers resolve tenancy through their monitor/status_page anchors instead of a local tenant_id filter — divergence D3, matches ADR-0002 derived-tenancy design.
+- Commit or artifact reference: PR #16 squash-merged as 4648dd4c65b75b2a8d6088225da523ed951bb52c, branch `feat/g1-08-model-rel-mig-tests`.
