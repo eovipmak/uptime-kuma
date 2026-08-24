@@ -1,7 +1,7 @@
 # ADR-0004 — Authentication Strategy and RBAC Model
 
 - **ADR:** ADR-0004 — Authentication strategy and RBAC model
-Status: Proposed
+Status: Accepted
 Date: 2026-08-23
 Deciders: CTO (architecture lead), Backend engineers (Dev1/Dev2), QA
 

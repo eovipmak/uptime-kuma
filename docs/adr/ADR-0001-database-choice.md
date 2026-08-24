@@ -1,7 +1,7 @@
 # ADR-0001 — Database Choice for Multi-Tenant Uptime Kuma
 
 - **ADR:** ADR-0001 — Database choice
-Status: Proposed
+Status: Accepted
 Date: 2026-08-23
 Deciders: CTO (architecture lead), Backend engineers (Dev1/Dev2), QA
 
