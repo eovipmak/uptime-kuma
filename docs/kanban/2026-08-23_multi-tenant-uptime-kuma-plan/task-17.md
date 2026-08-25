@@ -1,7 +1,7 @@
 # Task G4.17 — Base Repository + Tenant-Safe Query Wrapper (Contract Originator)
 
 **Phase:** G4 — Repository / Query Layer
-**Status:** todo
+**Status:** completed
 **Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Backend lead / Uptime Kuma maintainer (G4 entry-point signoff)
 
@@ -210,3 +210,17 @@ Backend lead / Uptime Kuma maintainer — **this is the G4 entry-point signoff**
 - **Do not** re-thread existing migrations or seed data — G1 owns database state.
 - **Do not** introduce a second ORM layer (`prisma`/`sequelize`) — the plan said "Prisma middleware / Sequelize hooks / Knex builder wrapper" as possibilities; the codebase is on `redbean-node`, so the wrapper is layered on top of RedBean, not a replacement (least-surprise for the existing handlers).
 - **Do not** change the `setting` table queries — the global settings table (`server/settings.js`) is **cross-tenant** (system-wide config like `jwtSecret`, `entryPage`); the wrapper must not retro-fit a `tenant_id` there. Document that `setting` is a known exemption (`require-tenant-scope` will fire on `Settings.get`'s `R.findOne`; an inline `eslint-disable` with rationale "setting is cross-tenant system config" is the correct interpretation — call it out in the rule's `meta.docs`).
+
+## Coordinator status
+- Status: completed
+- Completed by: Oracle (CTO) — implementation delivered via KUM-33 (PR author: shared eovipmak account), reviewed and merged by CTO
+- Completed at: 2026-08-25T11:25:00Z
+- Verification:
+  - `npm run lint` → 0 errors / 229 warnings (new `uptime-kuma/require-tenant-scope` rule flagging un-migrated call sites as designed; warn→error flips owned by task-18/19)
+  - `npm run tsc` → clean
+  - `node --test test/backend-test/test-repo-tenant.js` → 9/9 pass, 0 fail (temp-file SQLite, in-process redbean wiring — D-016 compliant, no containers)
+  - Contract review against this spec: fail-loud `assertTenantId` (no silent default-tenant), caller fragments may not reference `tenant_id`, `execForTenant` refuses WHERE-less/multi-row mutations without `{ requireId: false }` + strips trailing `;`, param ordering verified, `findAllForTenant` leads with AND for redbean's `" 1=1 "` prefix
+- Commit or artifact reference: PR [#44](https://github.com/eovipmak/uptime-kuma/pull/44) merged (squash) → master; branch `feat/g4-17-base-repository`
+- Notes:
+  - Accepted deviation: plugin registered as local `file:` devDependency (`eslint-plugin-uptime-kuma`) instead of adding `@eslint/plugin-kit`; zero new external packages, rationale documented in PR description.
+  - Frozen contract intact for consumers: task-18 (socket handlers), task-19 (models + server core), task-20 (IDOR tests) may now build on `require("../repository")`.
