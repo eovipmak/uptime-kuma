@@ -981,6 +981,10 @@ let needSetup = false;
                     bean.retry_only_on_status_code_failure = monitor.retryOnlyOnStatusCodeFailure;
                 }
                 bean.user_id = socket.userID;
+                if (socket.tenantID == null) {
+                    throw new Error("No active tenant context.");
+                }
+                bean.tenant_id = socket.tenantID;
 
                 bean.validate();
 
