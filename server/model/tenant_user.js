@@ -19,6 +19,23 @@ class TenantUser extends BeanModel {
             userId,
         ]);
     }
+
+    /**
+     * Resolve the user's primary (lowest-id) tenant id.
+     * Interim fallback for emit sites that only know a user id (live heartbeat
+     * path in the model layer): legacy rows created before the G4 tenant
+     * backfill carry no tenant_id, so their owner's primary tenant stands in.
+     * Superseded by G5's monitoring-engine dispatch.
+     * @param {number} userId ID of the user
+     * @returns {Promise<number|null>} Tenant id, or null when the user has no membership
+     */
+    static async getPrimaryTenantID(userId) {
+        const rows = await R.getAll(
+            "SELECT t.id FROM tenant_user tu JOIN tenant t ON t.id = tu.tenant_id WHERE tu.user_id = ? ORDER BY t.id LIMIT 1",
+            [userId]
+        );
+        return rows.length > 0 ? rows[0].id : null;
+    }
 }
 
 module.exports = TenantUser;

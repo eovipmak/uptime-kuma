@@ -636,14 +636,21 @@ exports.allowAllOrigin = (res) => {
 };
 
 /**
- * Check if a user is logged in
+ * Check if a user is logged in and has a resolved tenant context
  * @param {Socket} socket Socket instance
  * @returns {void}
  * @throws The user is not logged in
+ * @throws The socket has no tenant context (not set by afterLogin/switchTenant)
  */
 exports.checkLogin = (socket) => {
     if (!socket.userID) {
         throw new Error("You are not logged in.");
+    }
+    // G2 task-11: every business handler implicitly asserts a resolved tenant
+    // context, so downstream role checks (G3) and tenant-safe queries (G4)
+    // can rely on socket.tenantID being set after login.
+    if (socket.tenantID === undefined || socket.tenantID === null) {
+        throw new Error("Tenant context required.");
     }
 };
 

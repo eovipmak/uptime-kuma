@@ -7,6 +7,8 @@ const { UptimeKumaServer } = require("./uptime-kuma-server");
 const server = UptimeKumaServer.getInstance();
 const io = server.io;
 const { setting } = require("./util-server");
+// G2 task-11: tenant-partitioned room keys for every user-scoped emit
+const { userRoom } = require("./socket-handlers/tenant-room");
 const checkVersion = require("./check-version");
 const Database = require("./database");
 
@@ -28,7 +30,7 @@ async function sendNotificationList(socket) {
         result.push(notificationObject);
     }
 
-    io.to(socket.userID).emit("notificationList", result);
+    io.to(userRoom(socket.tenantID, socket.userID)).emit("notificationList", result);
 
     timeLogger.print("Send Notification List");
 
@@ -57,7 +59,7 @@ async function sendHeartbeatList(socket, monitorID, toUser = false, overwrite = 
     let result = list.reverse();
 
     if (toUser) {
-        io.to(socket.userID).emit("heartbeatList", monitorID, result, overwrite);
+        io.to(userRoom(socket.tenantID, socket.userID)).emit("heartbeatList", monitorID, result, overwrite);
     } else {
         socket.emit("heartbeatList", monitorID, result, overwrite);
     }
@@ -90,7 +92,7 @@ async function sendImportantHeartbeatList(socket, monitorID, toUser = false, ove
     const result = list.map((bean) => bean.toJSON());
 
     if (toUser) {
-        io.to(socket.userID).emit("importantHeartbeatList", monitorID, result, overwrite);
+        io.to(userRoom(socket.tenantID, socket.userID)).emit("importantHeartbeatList", monitorID, result, overwrite);
     } else {
         socket.emit("importantHeartbeatList", monitorID, result, overwrite);
     }
@@ -105,7 +107,7 @@ async function sendProxyList(socket) {
     const timeLogger = new TimeLogger();
 
     const list = await R.find("proxy", " user_id = ? ", [socket.userID]);
-    io.to(socket.userID).emit(
+    io.to(userRoom(socket.tenantID, socket.userID)).emit(
         "proxyList",
         list.map((bean) => bean.export())
     );
@@ -130,7 +132,7 @@ async function sendAPIKeyList(socket) {
         result.push(bean.toPublicJSON());
     }
 
-    io.to(socket.userID).emit("apiKeyList", result);
+    io.to(userRoom(socket.tenantID, socket.userID)).emit("apiKeyList", result);
     timeLogger.print("Sent API Key List");
 
     return list;
@@ -177,7 +179,7 @@ async function sendDockerHostList(socket) {
         result.push(bean.toJSON());
     }
 
-    io.to(socket.userID).emit("dockerHostList", result);
+    io.to(userRoom(socket.tenantID, socket.userID)).emit("dockerHostList", result);
 
     timeLogger.print("Send Docker Host List");
 
@@ -199,7 +201,7 @@ async function sendRemoteBrowserList(socket) {
         result.push(bean.toJSON());
     }
 
-    io.to(socket.userID).emit("remoteBrowserList", result);
+    io.to(userRoom(socket.tenantID, socket.userID)).emit("remoteBrowserList", result);
 
     timeLogger.print("Send Remote Browser List");
 
@@ -232,7 +234,7 @@ async function sendMonitorTypeList(socket) {
         ];
     });
 
-    io.to(socket.userID).emit("monitorTypeList", Object.fromEntries(result));
+    io.to(userRoom(socket.tenantID, socket.userID)).emit("monitorTypeList", Object.fromEntries(result));
 }
 
 module.exports = {

@@ -8,11 +8,14 @@ const { log, isDev } = require("../src/util");
 const Database = require("./database");
 const util = require("util");
 const { Settings } = require("./settings");
+const { TenantUser } = require("./model/tenant_user");
 const dayjs = require("dayjs");
 const childProcessAsync = require("promisify-child-process");
 const path = require("path");
 const axios = require("axios");
 const { isSSL, sslKey, sslCert, sslKeyPassphrase } = require("./config");
+// G2 task-11: tenant-partitioned room keys for user-scoped emits
+const { userRoom } = require("./socket-handlers/tenant-room");
 // DO NOT IMPORT HERE IF THE MODULES USED `UptimeKumaServer.getInstance()`, put at the bottom of this file instead.
 
 /**
@@ -221,7 +224,7 @@ class UptimeKumaServer {
      */
     async sendMonitorList(socket) {
         let list = await this.getMonitorJSONList(socket.userID);
-        this.io.to(socket.userID).emit("monitorList", list);
+        this.io.to(userRoom(socket.tenantID, socket.userID)).emit("monitorList", list);
         return list;
     }
 
@@ -234,7 +237,7 @@ class UptimeKumaServer {
     async sendUpdateMonitorIntoList(socket, monitorID) {
         let list = await this.getMonitorJSONList(socket.userID, monitorID);
         if (list && list[monitorID]) {
-            this.io.to(socket.userID).emit("updateMonitorIntoList", list);
+            this.io.to(userRoom(socket.tenantID, socket.userID)).emit("updateMonitorIntoList", list);
         }
     }
 
@@ -245,7 +248,7 @@ class UptimeKumaServer {
      * @returns {Promise<void>}
      */
     async sendDeleteMonitorFromList(socket, monitorID) {
-        this.io.to(socket.userID).emit("deleteMonitorFromList", monitorID);
+        this.io.to(userRoom(socket.tenantID, socket.userID)).emit("deleteMonitorFromList", monitorID);
     }
 
     /**
@@ -291,11 +294,21 @@ class UptimeKumaServer {
     /**
      * Send list of maintenances to user
      * @param {number} userID User to send list to
+     * @param {number|null} tenantID Active tenant of the user (G2 task-11).
+     * When omitted, falls back to the user's primary tenant so legacy
+     * model-layer callers keep delivering until G5 owns dispatch.
      * @returns {Promise<object>} Maintenance list
      */
-    async sendMaintenanceListByUserID(userID) {
+    async sendMaintenanceListByUserID(userID, tenantID = null) {
         let list = await this.getMaintenanceJSONList(userID);
-        this.io.to(userID).emit("maintenanceList", list);
+
+        const roomTenantID = (tenantID !== null && tenantID !== undefined) ? tenantID : await TenantUser.getPrimaryTenantID(userID);
+        if (!roomTenantID) {
+            log.warn("maintenance", `sendMaintenanceListByUserID: user ${userID} has no tenant membership; skipping emit`);
+            return list;
+        }
+
+        this.io.to(userRoom(roomTenantID, userID)).emit("maintenanceList", list);
         return list;
     }
 
@@ -551,6 +564,45 @@ class UptimeKumaServer {
     disconnectAllSocketClients(userID, currentSocketID = undefined) {
         for (const socket of this.io.sockets.sockets.values()) {
             if (socket.userID === userID && socket.id !== currentSocketID) {
+                try {
+                    socket.emit("refresh");
+                    socket.disconnect();
+                } catch (e) {}
+            }
+        }
+    }
+
+    /**
+     * Force connected sockets of a user to refresh and disconnect, but only
+     * within a single tenant. Used when a user is removed from a tenant
+     * (G2.12 force-logout): their sessions in other tenants stay alive,
+     * unlike password reset which invalidates every session cross-tenant
+     * via disconnectAllSocketClients().
+     * Targets sockets joined to the user room key from
+     * server/socket-handlers/tenant-room.js (`t${tenantId}:u${userId}`);
+     * before G2.11 room wiring lands this matches nothing and is a no-op.
+     *
+     * ID contract (G2.11, CTO pre-review KUM-82): `userID` and `tenantId`
+     * MUST be the numeric database ids — the same values sockets carry as
+     * `socket.userID = user.id` (afterLogin) and `socket.tenantID`. The
+     * strict-equality checks below and the room-key validators both assume
+     * numbers; passing an opaque/UUID string would never match a socket and
+     * userRoom() throws on non-numeric ids, so G2.12 call sites must pass
+     * the removed membership's numeric user.id.
+     * @param {number} tenantId Tenant id
+     * @param {number} userID Numeric user id (user.id, not an opaque string)
+     * @param {string?} currentSocketID Current socket ID to keep alive
+     * @returns {void}
+     */
+    disconnectAllSocketClientsForTenant(tenantId, userID, currentSocketID = undefined) {
+        const userRoomKey = userRoom(tenantId, userID);
+        for (const socket of this.io.sockets.sockets.values()) {
+            if (
+                socket.tenantID === tenantId
+                && socket.userID === userID
+                && socket.rooms.has(userRoomKey)
+                && socket.id !== currentSocketID
+            ) {
                 try {
                     socket.emit("refresh");
                     socket.disconnect();

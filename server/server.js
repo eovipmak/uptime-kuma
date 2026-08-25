@@ -119,6 +119,9 @@ log.debug("server", "Importing Monitor");
 const Monitor = require("./model/monitor");
 const User = require("./model/user");
 
+// G2 task-11: tenant-partitioned Socket.IO room helpers
+const { joinUserRooms, leaveUserRooms } = require("./socket-handlers/tenant-room");
+
 log.debug("server", "Importing Settings");
 const {
     getSettings,
@@ -383,6 +386,8 @@ let needSetup = false;
         bearerAuth,
         requireTenantContext,
         isTenantGuardExemptPath,
+        findTenantByIdOrSlug,
+        getMembershipRole,
     } = require("./middleware");
     app.use(bearerAuth());
     app.use(resolveTenant());
@@ -642,11 +647,88 @@ let needSetup = false;
                 return;
             }
 
-            socket.leave(socket.userID);
+            // G2 task-11: leave all tenant-partitioned rooms and clear the
+            // tenant context so the next login re-resolves it.
+            leaveUserRooms(socket);
+            socket.tenantID = null;
             socket.userID = null;
 
             if (typeof callback === "function") {
                 callback();
+            }
+        });
+
+        socket.on("switchTenant", async (targetTenant, callback) => {
+            // G2 task-11: switch the session's active tenant. The requested
+            // reference (numeric id or slug) is resolved and membership
+            // re-validated server-side via task-10's shared resolver exports
+            // (findTenantByIdOrSlug + getMembershipRole) — the same source of
+            // truth as the HTTP POST /api/switch-tenant path, no client trust.
+            // resolveTenantIdForInbound() is intentionally NOT used here: its
+            // ADR-0003 fallback chain (JWT tid → default tenant) would silently
+            // resolve a non-member target to a different tenant instead of
+            // denying the switch.
+            try {
+                if (typeof callback !== "function") {
+                    return;
+                }
+                checkLogin(socket);
+
+                // Rate limit — a switch re-sends every tenant-scoped list.
+                if (!(await loginRateLimiter.pass(callback))) {
+                    return;
+                }
+
+                const target = await findTenantByIdOrSlug(targetTenant);
+                const membershipRole = target == null
+                    ? null
+                    : await getMembershipRole(socket.userID, target.id);
+
+                if (membershipRole == null) {
+                    log.info("auth", `Tenant switch denied for user ${socket.userID}: no matching membership`);
+                    callback({
+                        ok: false,
+                        msg: "You do not have access to this tenant.",
+                    });
+                    return;
+                }
+
+                let user = await R.findOne("user", " id = ? AND active = 1 ", [socket.userID]);
+                if (!user) {
+                    throw new Error("User inactive or deleted.");
+                }
+
+                // Issue the refreshed JWT before mutating socket state so a
+                // failure leaves the current tenant context untouched. The
+                // role claim comes from the authoritative tenant_user row.
+                let token = User.createJWT(user, target.id, membershipRole, server.jwtSecret);
+
+                leaveUserRooms(socket);
+                socket.tenantID = target.id;
+                joinUserRooms(socket, {
+                    tenantId: target.id,
+                    userId: socket.userID,
+                });
+
+                // Re-send every tenant-scoped list so the client refreshes
+                // with the new tenant's data (the UI switcher itself is G7).
+                await emitTenantScopedLists(socket, user);
+
+                log.info("auth", `User ${user.username} switched to tenant ${target.id}`);
+                callback({
+                    ok: true,
+                    token,
+                    tenants: await listTenantsForUser(user.id),
+                    activeTenantId: target.id,
+                });
+            } catch (error) {
+                log.error("auth", `Tenant switch failed: ${error.message}`);
+                if (typeof callback === "function") {
+                    callback({
+                        ok: false,
+                        msg: error.message,
+                    });
+                }
             }
         });
 
@@ -1946,8 +2028,7 @@ async function checkOwner(userID, monitorID) {
  * @param {object} user User object
  * @param {number} tenantID Active tenant for the session (G2 task-09). Optional:
  * when omitted, it is resolved as the user's first accessible tenant
- * (e.g. the auto-login path). The room-key reshape to tenant-partitioned rooms
- * is G2/task-11; this only records the active tenant on the socket.
+ * (e.g. the auto-login path).
  * @returns {Promise<void>}
  */
 async function afterLogin(socket, user, tenantID) {
@@ -1961,8 +2042,39 @@ async function afterLogin(socket, user, tenantID) {
         socket.tenantID = tenants[0]?.id ?? null;
     }
 
-    socket.join(user.id);
+    // G2 task-11: join tenant-partitioned rooms instead of the legacy raw
+    // user-id room so no client can receive another tenant's events.
+    if (socket.tenantID === undefined || socket.tenantID === null) {
+        log.error("auth", `afterLogin: user ${user?.id} has no tenant context; socket will not receive business events`);
+        // Early return: emitTenantScopedLists() derives room keys from
+        // socket.tenantID and would throw on userRoom(null, …).
+        return;
+    }
 
+    joinUserRooms(socket, {
+        tenantId: socket.tenantID,
+        userId: socket.userID,
+    });
+
+    await emitTenantScopedLists(socket, user);
+
+    // Set server timezone from client browser if not set
+    // It should be run once only
+    if (!(await Settings.get("initServerTimezone"))) {
+        log.debug("server", "emit initServerTimezone");
+        socket.emit("initServerTimezone");
+    }
+}
+
+/**
+ * Send every tenant-scoped list to the socket's active-tenant rooms.
+ * Shared by afterLogin and switchTenant so a tenant switch refreshes exactly
+ * the same payload set as a fresh login.
+ * @param {Socket} socket Socket.io instance (socket.tenantID must be resolved)
+ * @param {object} user User object
+ * @returns {Promise<void>}
+ */
+async function emitTenantScopedLists(socket, user) {
     let monitorList = await server.sendMonitorList(socket);
     await Promise.allSettled([
         sendInfo(socket),
@@ -1980,17 +2092,10 @@ async function afterLogin(socket, user, tenantID) {
     const monitorPromises = [];
     for (let monitorID in monitorList) {
         monitorPromises.push(sendHeartbeatList(socket, monitorID));
-        monitorPromises.push(Monitor.sendStats(io, monitorID, user.id));
+        monitorPromises.push(Monitor.sendStats(io, monitorID, user.id, socket.tenantID));
     }
 
     await Promise.all(monitorPromises);
-
-    // Set server timezone from client browser if not set
-    // It should be run once only
-    if (!(await Settings.get("initServerTimezone"))) {
-        log.debug("server", "emit initServerTimezone");
-        socket.emit("initServerTimezone");
-    }
 }
 
 /**

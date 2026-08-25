@@ -44,6 +44,9 @@ const {
 } = require("../util-server");
 const { R } = require("redbean-node");
 const { BeanModel } = require("redbean-node/dist/bean-model");
+// G2 task-11: tenant-partitioned room keys for live emits
+const { userRoom } = require("../socket-handlers/tenant-room");
+const { TenantUser } = require("./tenant_user");
 const { Notification } = require("../notification");
 const { Proxy } = require("../proxy");
 const { demoMode } = require("../config");
@@ -1056,7 +1059,15 @@ class Monitor extends BeanModel {
 
             // Send to frontend
             log.debug("monitor", `[${this.name}] Send to socket`);
-            io.to(this.user_id).emit("heartbeat", bean.toJSON());
+            // G2 task-11: live beats go to the owner's tenant-scoped user room.
+            // Rows created before the G4 tenant backfill carry no tenant_id, so
+            // the owner's primary tenant stands in until G5 owns dispatch.
+            const roomTenantID = (this.tenant_id != null) ? this.tenant_id : await TenantUser.getPrimaryTenantID(this.user_id);
+            if (roomTenantID) {
+                io.to(userRoom(roomTenantID, this.user_id)).emit("heartbeat", bean.toJSON());
+            } else {
+                log.warn("monitor", `[${this.name}] No tenant context for user ${this.user_id}; skipping live heartbeat emit`);
+            }
             Monitor.sendStats(io, this.id, this.user_id);
 
             // Store to database
@@ -1312,31 +1323,47 @@ class Monitor extends BeanModel {
      * @param {number} userID ID of user to send to
      * @returns {void}
      */
-    static async sendStats(io, monitorID, userID) {
-        const hasClients = getTotalClientInRoom(io, userID) > 0;
+    /**
+     * Send statistics to clients
+     * @param {Server} io Socket server instance
+     * @param {number} monitorID ID of monitor to send
+     * @param {number} userID ID of user to send to
+     * @param {number|null} tenantID Active tenant of the user (G2 task-11).
+     * When omitted, falls back to the user's primary tenant so legacy callers
+     * keep delivering until G5 owns dispatch.
+     * @returns {Promise<void>}
+     */
+    static async sendStats(io, monitorID, userID, tenantID = null) {
+        const roomTenantID = (tenantID !== null && tenantID !== undefined) ? tenantID : await TenantUser.getPrimaryTenantID(userID);
+        if (!roomTenantID) {
+            log.debug("monitor", `No tenant context for user ${userID}; skipping stats`);
+            return;
+        }
+        const roomKey = userRoom(roomTenantID, userID);
+        const hasClients = getTotalClientInRoom(io, roomKey) > 0;
         let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(monitorID);
 
         if (hasClients) {
             // Send 24 hour average ping
             let data24h = await uptimeCalculator.get24Hour();
-            io.to(userID).emit("avgPing", monitorID, data24h.avgPing ? Number(data24h.avgPing.toFixed(2)) : null);
+            io.to(roomKey).emit("avgPing", monitorID, data24h.avgPing ? Number(data24h.avgPing.toFixed(2)) : null);
 
             // Send 24 hour uptime
-            io.to(userID).emit("uptime", monitorID, 24, data24h.uptime);
+            io.to(roomKey).emit("uptime", monitorID, 24, data24h.uptime);
 
             // Send 30 day uptime
             let data30d = await uptimeCalculator.get30Day();
-            io.to(userID).emit("uptime", monitorID, 720, data30d.uptime);
+            io.to(roomKey).emit("uptime", monitorID, 720, data30d.uptime);
 
             // Send 1-year uptime
             let data1y = await uptimeCalculator.get1Year();
-            io.to(userID).emit("uptime", monitorID, "1y", data1y.uptime);
+            io.to(roomKey).emit("uptime", monitorID, "1y", data1y.uptime);
 
             // Send Cert Info
-            await Monitor.sendCertInfo(io, monitorID, userID);
+            await Monitor.sendCertInfo(io, monitorID, userID, roomTenantID);
 
             // Send domain info
-            await Monitor.sendDomainInfo(io, monitorID, userID);
+            await Monitor.sendDomainInfo(io, monitorID, userID, roomTenantID);
         } else {
             log.debug("monitor", "No clients in the room, no need to send stats");
         }
@@ -1347,12 +1374,13 @@ class Monitor extends BeanModel {
      * @param {Server} io Socket server instance
      * @param {number} monitorID ID of monitor to send
      * @param {number} userID ID of user to send to
-     * @returns {void}
+     * @param {number} tenantID Active tenant of the user (G2 task-11)
+     * @returns {Promise<void>}
      */
-    static async sendCertInfo(io, monitorID, userID) {
+    static async sendCertInfo(io, monitorID, userID, tenantID) {
         let tlsInfo = await R.findOne("monitor_tls_info", "monitor_id = ?", [monitorID]);
         if (tlsInfo != null) {
-            io.to(userID).emit("certInfo", monitorID, tlsInfo.info_json);
+            io.to(userRoom(tenantID, userID)).emit("certInfo", monitorID, tlsInfo.info_json);
         }
     }
 
@@ -1361,16 +1389,17 @@ class Monitor extends BeanModel {
      * @param {Server} io Socket server instance
      * @param {number} monitorID ID of monitor to send
      * @param {number} userID ID of user to send to
-     * @returns {void}
+     * @param {number} tenantID Active tenant of the user (G2 task-11)
+     * @returns {Promise<void>}
      */
-    static async sendDomainInfo(io, monitorID, userID) {
+    static async sendDomainInfo(io, monitorID, userID, tenantID) {
         const monitor = await R.findOne("monitor", "id = ?", [monitorID]);
 
         try {
             const supportInfo = await DomainExpiry.checkSupport(monitor);
             const domain = await DomainExpiry.findByDomainNameOrCreate(supportInfo.domain);
             if (domain?.expiry) {
-                io.to(userID).emit("domainInfo", monitorID, domain.daysRemaining, new Date(domain.expiry));
+                io.to(userRoom(tenantID, userID)).emit("domainInfo", monitorID, domain.daysRemaining, new Date(domain.expiry));
             }
         } catch (e) {}
     }

@@ -1,4 +1,6 @@
 const { checkLogin, setSetting, setting, doubleCheckPassword } = require("../util-server");
+// G2 task-11: tenant-partitioned room keys for user-scoped emits
+const { userRoom } = require("./tenant-room");
 const { CloudflaredTunnel } = require("node-cloudflared-tunnel");
 const { UptimeKumaServer } = require("../uptime-kuma-server");
 const { log } = require("../../src/util");
@@ -37,9 +39,9 @@ module.exports.cloudflaredSocketHandler = (socket) => {
         try {
             checkLogin(socket);
             socket.join("cloudflared");
-            io.to(socket.userID).emit(prefix + "installed", cloudflared.checkInstalled());
-            io.to(socket.userID).emit(prefix + "running", cloudflared.running);
-            io.to(socket.userID).emit(prefix + "token", await setting("cloudflaredTunnelToken"));
+            io.to(userRoom(socket.tenantID, socket.userID)).emit(prefix + "installed", cloudflared.checkInstalled());
+            io.to(userRoom(socket.tenantID, socket.userID)).emit(prefix + "running", cloudflared.running);
+            io.to(userRoom(socket.tenantID, socket.userID)).emit(prefix + "token", await setting("cloudflaredTunnelToken"));
         } catch (error) {
             log.error("cloudflared", "Error in join handler: " + error.message);
         }
