@@ -1,7 +1,8 @@
 const dayjs = require("dayjs");
-const { UP, MAINTENANCE, DOWN, PENDING } = require("../src/util");
+const { UP, MAINTENANCE, DOWN, PENDING, log } = require("../src/util");
 const { LimitQueue } = require("./utils/limit-queue");
-const { log } = require("../src/util");
+// G4.20 (KUM-36): adopt the tenant cache-key namespace contract from G4.17
+const { tenantCacheKey } = require("./repository/cache-namespace");
 const { R } = require("redbean-node");
 
 /**
@@ -13,6 +14,15 @@ class UptimeCalculator {
      * @type {{string:UptimeCalculator}}
      */
     static list = {};
+
+    /**
+     * Memoized monitorID → tenant_id map for cache-key namespacing (G4.20).
+     * Populated once per monitor via a single-column lookup; ids are never
+     * reused so entries cannot go stale within a process.
+     * @private
+     * @type {{number: number}}
+     */
+    static monitorTenantMap = {};
 
     /**
      * For testing purposes, we can set the current date to a specific date.
@@ -74,11 +84,55 @@ class UptimeCalculator {
             throw new Error("Monitor ID is required");
         }
 
-        if (!UptimeCalculator.list[monitorID]) {
-            UptimeCalculator.list[monitorID] = new UptimeCalculator();
-            await UptimeCalculator.list[monitorID].init(monitorID);
+        // G4.20: entries are keyed by the tenant-namespaced cache key
+        // (tenant:${tenantId}:monitor:${monitorID}) so the G10 Redis adapter
+        // can adopt this namespace without a key-string sweep. The owning
+        // tenant is resolved once per monitor and cached below.
+        const key = await UptimeCalculator.getCacheKey(monitorID);
+
+        if (!UptimeCalculator.list[key]) {
+            UptimeCalculator.list[key] = new UptimeCalculator();
+            await UptimeCalculator.list[key].init(monitorID);
         }
-        return UptimeCalculator.list[monitorID];
+        return UptimeCalculator.list[key];
+    }
+
+    /**
+     * Tenant-resolving cache-key builder (G4.20, KUM-36).
+     *
+     * Monitor ids are globally unique auto-increment PKs, so the legacy bare
+     * `list[monitorID]` map could never actually collide across tenants — but
+     * hand-writing un-namespaced keys is exactly what the G4.17 contract
+     * retires, because a namespaced key makes cross-tenant cache reads
+     * structurally impossible instead of "impossible by PK semantics".
+     *
+     * This module has no caller tenant context (it is keyed by monitorID from
+     * both socket and public-badge paths), so per task-20 step 3 the owning
+     * tenant is verified with one single-column lookup per monitor lifetime
+     * and memoized; monitor ids are never reused, so the mapping cannot go
+     * stale within a process.
+     * @param {number} monitorID the id of the monitor
+     * @returns {Promise<string>} namespaced cache key `tenant:${tenantId}:monitor:${monitorID}`
+     */
+    static async getCacheKey(monitorID) {
+        let tenantId = UptimeCalculator.monitorTenantMap[monitorID];
+
+        if (tenantId === undefined) {
+            tenantId = await R.getCell("SELECT tenant_id FROM monitor WHERE id = ? ", [ monitorID ]);
+            UptimeCalculator.monitorTenantMap[monitorID] = tenantId;
+        }
+
+        if (tenantId === null || tenantId === undefined) {
+            // Documented exemption (task-20 step 3), not a silent bypass: the
+            // monitor row is already gone (or predates tenant backfill), so no
+            // tenant scope exists to namespace by. The entry can only have been
+            // created before deletion; keep the legacy bare key so remove()
+            // still finds it.
+            log.warn("uptime-calculator", `getCacheKey: no tenant_id found for monitor ${monitorID}; using unscoped cache key`);
+            return `monitor:${monitorID}`;
+        }
+
+        return tenantCacheKey(tenantId, `monitor:${monitorID}`);
     }
 
     /**
@@ -87,7 +141,10 @@ class UptimeCalculator {
      * @returns {Promise<void>}
      */
     static async remove(monitorID) {
-        delete UptimeCalculator.list[monitorID];
+        const key = await UptimeCalculator.getCacheKey(monitorID);
+        delete UptimeCalculator.list[key];
+        // ids are never reused; drop the memo too so nothing accumulates
+        delete UptimeCalculator.monitorTenantMap[monitorID];
     }
 
     /**
@@ -96,6 +153,7 @@ class UptimeCalculator {
      */
     static async removeAll() {
         UptimeCalculator.list = {};
+        UptimeCalculator.monitorTenantMap = {};
     }
 
     /**
