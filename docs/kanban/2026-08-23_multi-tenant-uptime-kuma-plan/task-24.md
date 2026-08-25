@@ -2,6 +2,7 @@
 
 **Phase:** G6 — Status Page Multi-Tenant
 **Status:** todo
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Backend lead / Uptime Kuma maintainer (G6 entry-point signoff)
 
 ## Objective

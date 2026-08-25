@@ -2,6 +2,7 @@
 
 **Phase:** G4 — Repository / Query Layer
 **Status:** todo
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Backend lead / Uptime Kuma maintainer
 
 ## Objective

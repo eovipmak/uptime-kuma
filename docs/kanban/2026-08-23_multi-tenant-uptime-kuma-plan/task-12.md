@@ -1,7 +1,8 @@
 # Task G2.12 — Force-Logout on Tenant Removal + Integration Tests
 
 **Phase:** G2 — Authentication & Tenant Context
-**Status:** todo
+**Status:** completed
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Security lead / Uptime Kuma maintainer (final G2 signoff)
 
 ## Objective
@@ -145,3 +146,10 @@ Only after reviewer signoff, append the coordinator-status block and close Phase
 - **Do not** add Prometheus metrics for the job — G5/G9 own metrics; the emit/disconnect is the surface, metrics are later.
 - **Do not** modify the existing `disconnectAllSocketClients(userID)` for password reset — only the new tenant-scoped variant applies to this job.
 - **Do not** change the job interval to be configurable from the database (`settings` table) — env var only; DB-driven config belongs to a later ops pass (G9/G10).
+
+## Coordinator status
+- Status: completed
+- Completed by: Oracle (CTO)
+- Completed at: 2026-08-25T11:47:02+07:00
+- Verification: Verified against master history — PR #32 merged squash as 79285d20 ("feat(G2): tenant-membership watchdog job lifecycle + auth/force-logout integration suite"); `git show --stat` confirms exactly this task's owned file set: `server/jobs/check-tenant-membership.js` (new), `server/uptime-kuma-server.js` (lifecycle hooks only, +31), `src/lang/en.json` (`forceLogoutTenant` i18n), `test/backend-test/test-tenant-auth.js` (integration suite, new). Header Status stamp back-synced from `todo`; block retro-stamped during KUM-163 hygiene pass (block was omitted when the phase closed).
+- Commit or artifact reference: PR #32 → master 79285d20

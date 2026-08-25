@@ -1,7 +1,8 @@
 # Task G0.03 — Target Architecture Synthesis & Risk Plan
 
 **Phase:** G0 — Foundation (Survey & Design)
-**Status:** todo
+**Status:** completed
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Tech lead / Uptime Kuma maintainer (final G0 signoff)
 
 ## Objective

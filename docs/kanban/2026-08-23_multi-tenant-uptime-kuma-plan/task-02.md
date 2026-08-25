@@ -2,6 +2,7 @@
 
 **Phase:** G0 — Foundation (Survey & Design)
 **Status:** completed
+**Estimate:** M (per plan template "Format output task chuẩn")
 **Reviewer:** Tech lead / Uptime Kuma maintainer
 
 ## Objective

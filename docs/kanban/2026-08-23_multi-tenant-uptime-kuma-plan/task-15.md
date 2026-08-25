@@ -1,7 +1,8 @@
 # Task G3.15 — HTTP API Router RBAC Enforcement Sweep
 
 **Phase:** G3 — RBAC (Role-Based Access Control)
-**Status:** todo
+**Status:** completed
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Backend / Express lead / Uptime Kuma maintainer
 
 ## Objective
@@ -117,3 +118,10 @@ Backend / Express lead / Uptime Kuma maintainer. Specifically confirms:
 - **Do not** add audit-log writes — G9 hooks the 403 boundary; this task leaves the boundary clean (just `TranslatableError`).
 - **Do not** add resource-owner checks ("only the route can edit its own monitor") — G4 repository layer owns those.
 - **Do not** make `/metrics` role-gated — it is intentionally public for Prometheus scraping; tenancy there is enforced by the Prometheus exporter's label, not by HTTP auth (consistent with the existing design).
+
+## Coordinator status
+- Status: completed
+- Completed by: Oracle (CTO)
+- Completed at: 2026-08-25T16:16:59+07:00
+- Verification: Verified against master history — PR #38 merged squash as 8ec6aca9 ("feat(G3.15): HTTP API router RBAC disposition sweep"); `git show --stat` confirms exactly this task's owned file set: `server/routers/api-router.js` (+38) and `server/routers/status-page-router.js` (+18), public/auth-free routes left ungated per spec. Header Status stamp back-synced from `todo`; block retro-stamped during KUM-163 hygiene pass (block was omitted when the phase closed).
+- Commit or artifact reference: PR #38 → master 8ec6aca9

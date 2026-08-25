@@ -1,7 +1,8 @@
 # Task G3.16 — RBAC Acceptance Test Suite + Audit-Log Hook Surface for G9
 
 **Phase:** G3 — RBAC (Role-Based Access Control)
-**Status:** todo
+**Status:** completed
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Security lead / Uptime Kuma maintainer (G3 closing signoff)
 
 ## Objective
