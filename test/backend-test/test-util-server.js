@@ -55,3 +55,25 @@ describe("Server Utilities: pingAsync", () => {
         });
     });
 });
+
+describe("Server Utilities: checkLogin (G2 task-11 tenant assertion)", () => {
+    const { checkLogin } = require("../../server/util-server");
+
+    test("should throw when the user is not logged in", () => {
+        assert.throws(() => checkLogin({ userID: undefined, tenantID: 1 }), /not logged in/);
+        assert.throws(() => checkLogin({}), /not logged in/);
+    });
+
+    test("should throw when the tenant context is missing", () => {
+        // Logged-in sockets must always carry a resolved tenantID
+        // (set by afterLogin / switchTenant) before business handlers run.
+        assert.throws(() => checkLogin({ userID: 11 }), /Tenant context required/);
+        assert.throws(() => checkLogin({ userID: 11, tenantID: null }), /Tenant context required/);
+        assert.throws(() => checkLogin({ userID: 11, tenantID: undefined }), /Tenant context required/);
+    });
+
+    test("should pass when both user and tenant contexts are set", () => {
+        assert.doesNotThrow(() => checkLogin({ userID: 11, tenantID: 7 }));
+        assert.doesNotThrow(() => checkLogin({ userID: "11", tenantID: "7" }));
+    });
+});
