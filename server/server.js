@@ -386,6 +386,8 @@ let needSetup = false;
         bearerAuth,
         requireTenantContext,
         isTenantGuardExemptPath,
+        findTenantByIdOrSlug,
+        getMembershipRole,
     } = require("./middleware");
     app.use(bearerAuth());
     app.use(resolveTenant());
@@ -657,10 +659,15 @@ let needSetup = false;
         });
 
         socket.on("switchTenant", async (targetTenant, callback) => {
-            // G2 task-11: switch the session's active tenant. Membership is
-            // re-validated server-side against tenant_user (no client trust);
-            // once task-10's shared inbound resolver lands, this check
-            // delegates to it instead of querying memberships inline.
+            // G2 task-11: switch the session's active tenant. The requested
+            // reference (numeric id or slug) is resolved and membership
+            // re-validated server-side via task-10's shared resolver exports
+            // (findTenantByIdOrSlug + getMembershipRole) — the same source of
+            // truth as the HTTP POST /api/switch-tenant path, no client trust.
+            // resolveTenantIdForInbound() is intentionally NOT used here: its
+            // ADR-0003 fallback chain (JWT tid → default tenant) would silently
+            // resolve a non-member target to a different tenant instead of
+            // denying the switch.
             try {
                 if (typeof callback !== "function") {
                     return;
@@ -672,19 +679,12 @@ let needSetup = false;
                     return;
                 }
 
-                let memberships = await listTenantsForUser(socket.userID);
+                const target = await findTenantByIdOrSlug(targetTenant);
+                const membershipRole = target == null
+                    ? null
+                    : await getMembershipRole(socket.userID, target.id);
 
-                // Accept the tenant id (number or numeric string) or slug.
-                let target = null;
-                if (typeof targetTenant === "string") {
-                    target = /^\d+$/.test(targetTenant)
-                        ? memberships.find((tenant) => tenant.id === Number(targetTenant))
-                        : memberships.find((tenant) => tenant.slug === targetTenant);
-                } else if (typeof targetTenant === "number") {
-                    target = memberships.find((tenant) => tenant.id === targetTenant);
-                }
-
-                if (!target) {
+                if (membershipRole == null) {
                     log.info("auth", `Tenant switch denied for user ${socket.userID}: no matching membership`);
                     callback({
                         ok: false,
@@ -699,8 +699,9 @@ let needSetup = false;
                 }
 
                 // Issue the refreshed JWT before mutating socket state so a
-                // failure leaves the current tenant context untouched.
-                let token = User.createJWT(user, target.id, target.role, server.jwtSecret);
+                // failure leaves the current tenant context untouched. The
+                // role claim comes from the authoritative tenant_user row.
+                let token = User.createJWT(user, target.id, membershipRole, server.jwtSecret);
 
                 leaveUserRooms(socket);
                 socket.tenantID = target.id;
@@ -717,7 +718,7 @@ let needSetup = false;
                 callback({
                     ok: true,
                     token,
-                    tenants: memberships,
+                    tenants: await listTenantsForUser(user.id),
                     activeTenantId: target.id,
                 });
             } catch (error) {
@@ -2043,14 +2044,17 @@ async function afterLogin(socket, user, tenantID) {
 
     // G2 task-11: join tenant-partitioned rooms instead of the legacy raw
     // user-id room so no client can receive another tenant's events.
-    if (socket.tenantID !== undefined && socket.tenantID !== null) {
-        joinUserRooms(socket, {
-            tenantId: socket.tenantID,
-            userId: socket.userID,
-        });
-    } else {
+    if (socket.tenantID === undefined || socket.tenantID === null) {
         log.error("auth", `afterLogin: user ${user?.id} has no tenant context; socket will not receive business events`);
+        // Early return: emitTenantScopedLists() derives room keys from
+        // socket.tenantID and would throw on userRoom(null, …).
+        return;
     }
+
+    joinUserRooms(socket, {
+        tenantId: socket.tenantID,
+        userId: socket.userID,
+    });
 
     await emitTenantScopedLists(socket, user);
 
