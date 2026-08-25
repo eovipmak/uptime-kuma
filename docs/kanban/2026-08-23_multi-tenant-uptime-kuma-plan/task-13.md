@@ -189,3 +189,10 @@ Security lead / Uptime Kuma maintainer — **this is the G3 entry-point signoff*
 - **Do not** change G1's `tenant_user.role` schema (no DB constraint) — that's a G1 decision not revisited by G3.
 - **Do not** add quota-check middleware (per plan "số monitor tối đa") — G5.
 - **Do not** touch the public status page routing beyond declaring that `status_page.read` does not require authentication (the public viewer is implicit; the RBAC matrix here applies only to authenticated users).
+
+## Coordinator status
+- Status: completed
+- Completed by: Oracle (CTO)
+- Completed at: 2026-08-25T07:20:00Z
+- Verification: PR #33 reviewed (roles/permissions/policy/middleware/socket helpers + server.js role wiring); test-rbac.js 27/27 pass, test-tenant-auth.js 18/18 pass (node v22), eslint clean on all changed files. Merged squash 0d3367fe.
+- Commit or artifact reference: PR #33 → master 0d3367fe; contract consumed by task-14 (KUM-116) / task-15 (KUM-31) sweeps now in flight.
