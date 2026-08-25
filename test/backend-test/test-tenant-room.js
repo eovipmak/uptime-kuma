@@ -76,6 +76,22 @@ describe("id validation", () => {
         assert.strictEqual(userRoom("7", "11"), "t7:u11");
         assert.strictEqual(tenantRoom("7"), "t7");
     });
+
+    test("rejects values that only coerce into an id (KUM-82 hardening)", () => {
+        const bad = [ true, false, [ 5 ], {}, () => 1, " 5", "5 ", "5abc", "1e3", Infinity ];
+        for (const v of bad) {
+            assert.throws(() => userRoom(v, 1), undefined, `userRoom tenant ${String(v)}`);
+            assert.throws(() => userRoom(1, v), undefined, `userRoom user ${String(v)}`);
+            assert.throws(() => tenantRoom(v), undefined, `tenantRoom ${String(v)}`);
+        }
+    });
+
+    test("canonicalizes numeric strings so leading zeros cannot split rooms", () => {
+        // "007" and 7 must resolve to the same key, never two parallel rooms.
+        assert.strictEqual(userRoom("007", "011"), "t7:u11");
+        assert.strictEqual(userRoom(7, 11), userRoom("007", "011"));
+        assert.strictEqual(tenantRoom("042"), "t42");
+    });
 });
 
 describe("joinUserRooms", () => {

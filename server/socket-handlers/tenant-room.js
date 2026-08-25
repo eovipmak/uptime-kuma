@@ -17,26 +17,32 @@
 
 /**
  * Build the user-scoped room key for a tenant member.
+ *
+ * Source of truth for ids (G2.11, CTO pre-review KUM-82): always the NUMERIC
+ * database ids. Sockets carry `socket.userID = user.id` (afterLogin) and
+ * `socket.tenantID` from tenant_user rows, so call sites pass numbers; plain
+ * numeric strings are tolerated and canonicalized so `"007"` and `7` can
+ * never split into two different rooms.
  * @param {number} tenantId Tenant id
  * @param {number} userId User id
- * @returns {string} Room key in the form `t${tenantId}:u${userId}`
+ * @returns {string} Room key in the form `t{tenantId}:u{userId}`
  */
 const userRoom = (tenantId, userId) => {
     validateIds(tenantId, userId);
-    return `t${tenantId}:u${userId}`;
+    return `t${Number(tenantId)}:u${Number(userId)}`;
 };
 
 /**
  * Build the tenant-wide broadcast room key.
  * @param {number} tenantId Tenant id
- * @returns {string} Room key in the form `t${tenantId}`
- * @throws {Error} If tenantId is not a positive integer
+ * @returns {string} Room key in the form `t{tenantId}`
+ * @throws {Error} If tenantId is not a positive integer id
  */
 const tenantRoom = (tenantId) => {
     if (!isValidId(tenantId)) {
         throw new Error("tenantRoom requires a positive integer tenantId");
     }
-    return `t${tenantId}`;
+    return `t${Number(tenantId)}`;
 };
 
 /**
@@ -80,14 +86,27 @@ const validateIds = (tenantId, userId) => {
 };
 
 /**
- * Check a value is a usable id for a room key: integer >= 1 after numeric
- * coercion. Rejects null/undefined/"" (which coerce to 0), negatives,
- * fractions and non-numeric strings so a missing tenant context can never
- * silently produce a shared `t0`/`tNaN` room.
+ * Check a value is a usable id for a room key. Only real ids are accepted:
+ *  - `number` that is an integer >= 1, or
+ *  - string of digits (`/^\d+$/`) whose numeric value is >= 1
+ * (JWT/HTTP inputs may hand us numeric strings, so those stay valid).
+ *
+ * Everything else is rejected — booleans, arrays, objects and fractional /
+ * signed / whitespace strings never coerce into an id (`true` must not become
+ * `t1`, `[5]` must not become `t5`), and null/undefined/"" can never produce
+ * a shared `t0` room (cross-tenant leak).
  * @param {any} id Value to check
- * @returns {boolean} True when the value is a positive integer id
+ * @returns {boolean} True when the value is an unambiguous positive integer id
  */
-const isValidId = (id) => Number.isInteger(Number(id)) && Number(id) > 0;
+const isValidId = (id) => {
+    if (typeof id === "number") {
+        return Number.isInteger(id) && id > 0;
+    }
+    if (typeof id === "string") {
+        return /^\d+$/.test(id) && Number(id) > 0;
+    }
+    return false;
+};
 
 module.exports = {
     userRoom,

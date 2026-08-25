@@ -581,8 +581,16 @@ class UptimeKumaServer {
      * Targets sockets joined to the user room key from
      * server/socket-handlers/tenant-room.js (`t${tenantId}:u${userId}`);
      * before G2.11 room wiring lands this matches nothing and is a no-op.
+     *
+     * ID contract (G2.11, CTO pre-review KUM-82): `userID` and `tenantId`
+     * MUST be the numeric database ids — the same values sockets carry as
+     * `socket.userID = user.id` (afterLogin) and `socket.tenantID`. The
+     * strict-equality checks below and the room-key validators both assume
+     * numbers; passing an opaque/UUID string would never match a socket and
+     * userRoom() throws on non-numeric ids, so G2.12 call sites must pass
+     * the removed membership's numeric user.id.
      * @param {number} tenantId Tenant id
-     * @param {string} userID User ID
+     * @param {number} userID Numeric user id (user.id, not an opaque string)
      * @param {string?} currentSocketID Current socket ID to keep alive
      * @returns {void}
      */
