@@ -168,3 +168,10 @@ Realtime lead / Uptime Kuma maintainer. Specifically confirms:
 - **Do not** add audit logging for room joins/leaves — that is G9.
 - **Do not** modify the push-token flow beyond ensuring the push handler uses `monitor.tenant_id` (the explicit push-flow refactor is G5).
 - **Do not** change `disconnectAllSocketClients(userID)` (the original, used by password reset); only add the new `…ForTenant` variant alongside it.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-25T01:46:00Z
+- Verification: PR #28 reviewed across two rounds. Round 1 @2933d95f: eslint clean, tsc 0, targeted tests 15/15, backend 270/270, acceptance greps zero legacy io.to(socket.userID)/socket.join(user.id) — verdict posted to PR (changes requested: conflict resolution + shared resolver wiring). Round 2 @89ec0a80 after Echo rebase: conflicts resolved vs #27, switchTenant consumes findTenantByIdOrSlug+getMembershipRole (resolveTenantIdForInbound deliberately avoided: its JWT-tid/default fallback would silently resolve a non-member target instead of denying), afterLogin null-tenant early-return added, isValidId tightened to numbers/digit-strings with canonical Number() keys ("007"≡"7"), 17/17 targeted, backend 294/294, tsc 0. Squash-merged.
+- Commit or artifact reference: master a7f820bb (PR #28); review record PR #28 comment 5403668218; Paperclip KUM-84/KUM-86
