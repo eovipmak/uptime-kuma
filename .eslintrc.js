@@ -115,5 +115,17 @@ module.exports = {
                 "prefer-const": "off",
             },
         },
+        // G4.18 (KUM-34): task-18 migrated every R.findOne/R.find/R.exec/
+        // R.findAll call site in the socket-handler layer (socket-handlers/,
+        // client.js, server.js) to the server/repository wrappers or a
+        // documented inline exemption. Elevate to "error" so future
+        // regressions in these files surface immediately; task-19 flips the
+        // remaining files when it migrates the model layer.
+        {
+            files: ["server/socket-handlers/**/*.js", "server/client.js", "server/server.js"],
+            rules: {
+                "uptime-kuma/require-tenant-scope": "error",
+            },
+        },
     ],
 };

@@ -97,6 +97,13 @@ const express = require("express");
 const expressStaticGzip = require("express-static-gzip");
 log.debug("server", "Importing redbean-node");
 const { R } = require("redbean-node");
+// G4.18 (KUM-34): tenant-safe query wrappers for the socket-handler data access
+const {
+    findOneForTenant,
+    findAllForTenant,
+    execForTenant,
+    dispenseForTenant,
+} = require("./repository");
 log.debug("server", "Importing jsonwebtoken");
 const jwt = require("jsonwebtoken");
 log.debug("server", "Importing http-graceful-shutdown");
@@ -465,6 +472,10 @@ let needSetup = false;
 
                 log.info("auth", "Username from JWT: " + decoded.username);
 
+                // G4.18 exemption: `user` is global identity (ADR-0002 — no tenant_id
+                // column; tenancy lives in tenant_user). The tenant claim is validated
+                // below via listTenantsForUser before any tenant-scoped query runs.
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global identity (ADR-0002)
                 let user = await R.findOne("user", " username = ? AND active = 1 ", [decoded.username]);
 
                 if (user) {
@@ -617,6 +628,8 @@ let needSetup = false;
 
                         await afterLogin(socket, user, tenants[0].id);
 
+                        // G4.18 exemption: user is global identity (ADR-0002), self-scoped by socket.userID
+                        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global identity (ADR-0002)
                         await R.exec("UPDATE `user` SET twofa_last_token = ? WHERE id = ? ", [
                             data.token,
                             socket.userID,
@@ -710,6 +723,8 @@ let needSetup = false;
                     return;
                 }
 
+                // G4.18 exemption: user is global identity (ADR-0002), self-scoped by socket.userID
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global identity (ADR-0002)
                 let user = await R.findOne("user", " id = ? AND active = 1 ", [socket.userID]);
                 if (!user) {
                     throw new Error("User inactive or deleted.");
@@ -766,6 +781,8 @@ let needSetup = false;
                 // enforced by socket.userID below.
                 await doubleCheckPassword(socket, currentPassword);
 
+                // G4.18 exemption: user is global identity (ADR-0002), self-scoped by socket.userID
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global identity (ADR-0002)
                 let user = await R.findOne("user", " id = ? AND active = 1 ", [socket.userID]);
 
                 if (user.twofa_status === 0) {
@@ -779,6 +796,8 @@ let needSetup = false;
 
                     let uri = `otpauth://totp/Uptime%20Kuma:${user.username}?secret=${encodedSecret}`;
 
+                    // G4.18 exemption: user is global identity (ADR-0002), self-scoped by socket.userID
+                    // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global identity (ADR-0002)
                     await R.exec("UPDATE `user` SET twofa_secret = ? WHERE id = ? ", [newSecret, socket.userID]);
 
                     callback({
@@ -813,6 +832,8 @@ let needSetup = false;
                 // the caller's own account only (see prepare2FA annotation).
                 await doubleCheckPassword(socket, currentPassword);
 
+                // G4.18 exemption: user is global identity (ADR-0002), self-scoped by socket.userID
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global identity (ADR-0002)
                 await R.exec("UPDATE `user` SET twofa_status = 1 WHERE id = ? ", [socket.userID]);
 
                 log.info("auth", `Saved 2FA token. IP=${clientIP}`);
@@ -871,6 +892,8 @@ let needSetup = false;
                 // annotation).
                 await doubleCheckPassword(socket, currentPassword);
 
+                // G4.18 exemption: user is global identity (ADR-0002), self-scoped by socket.userID
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global identity (ADR-0002)
                 let user = await R.findOne("user", " id = ? AND active = 1 ", [socket.userID]);
 
                 let verify = notp.totp.verify(token, user.twofa_secret, twoFAVerifyOptions);
@@ -902,6 +925,8 @@ let needSetup = false;
                 // RBAC: read + self-service — reports the caller's own 2FA
                 // status; deliberately not gated.
 
+                // G4.18 exemption: user is global identity (ADR-0002), self-scoped by socket.userID
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global identity (ADR-0002)
                 let user = await R.findOne("user", " id = ? AND active = 1 ", [socket.userID]);
 
                 if (user.twofa_status === 1) {
@@ -944,6 +969,10 @@ let needSetup = false;
                     );
                 }
 
+                // G4.18 exemption: first-run setup — no tenant exists yet; the
+                // global-identity user row is linked to the default tenant by
+                // seedDefaultTenantIfEmpty() right below (G2 task-09).
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- bootstrap before any tenant exists
                 let user = R.dispense("user");
                 user.username = username;
                 user.password = await passwordHash.generate(password);
@@ -982,7 +1011,10 @@ let needSetup = false;
                 checkLogin(socket);
                 // G3 task-14: mutation — monitor create (member+ per task-13 matrix)
                 checkPermission(socket, PERMISSIONS.MONITOR_CREATE);
-                let bean = R.dispense("monitor");
+                // G4.18: born into the caller's tenant (wrapper throws if the
+                // tenant context is missing). Re-asserted after import() below,
+                // because import() copies arbitrary client-supplied properties.
+                let bean = dispenseForTenant("monitor", socket.tenantID);
 
                 let notificationIDList = monitor.notificationIDList;
                 delete monitor.notificationIDList;
@@ -1025,13 +1057,14 @@ let needSetup = false;
                 if (socket.tenantID == null) {
                     throw new Error("No active tenant context.");
                 }
+                // G4.18: re-assert after import() — never trust a client-supplied tenant_id
                 bean.tenant_id = socket.tenantID;
 
                 bean.validate();
 
                 await R.store(bean);
 
-                await updateMonitorNotification(bean.id, notificationIDList);
+                await updateMonitorNotification(bean.id, notificationIDList, socket.tenantID);
 
                 await server.sendUpdateMonitorIntoList(socket, bean.id);
 
@@ -1065,9 +1098,14 @@ let needSetup = false;
                 // G3 task-14: mutation — monitor update (member+ per task-13 matrix)
                 checkPermission(socket, PERMISSIONS.MONITOR_UPDATE);
 
-                let bean = await R.findOne("monitor", " id = ? ", [monitor.id]);
+                // G4.18: tenant+user scoped — a cross-tenant monitor id resolves
+                // to null here instead of leaking the row for a manual check.
+                let bean = await findOneForTenant("monitor", " id = ? AND user_id = ? ", [
+                    monitor.id,
+                    socket.userID,
+                ], socket.tenantID);
 
-                if (bean.user_id !== socket.userID) {
+                if (bean == null || bean.user_id !== socket.userID) {
                     throw new Error("Permission denied.");
                 }
 
@@ -1214,7 +1252,7 @@ let needSetup = false;
                     await Monitor.unlinkAllChildren(monitor.id);
                 }
 
-                await updateMonitorNotification(bean.id, monitor.notificationIDList);
+                await updateMonitorNotification(bean.id, monitor.notificationIDList, socket.tenantID);
 
                 if (await Monitor.isActive(bean.id, bean.active)) {
                     await restartMonitor(socket.userID, bean.id);
@@ -1261,7 +1299,15 @@ let needSetup = false;
 
                 log.info("monitor", `Get Monitor: ${monitorID} User ID: ${socket.userID}`);
 
-                let monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
+                // G4.18: tenant+user scoped — a cross-tenant monitor id returns
+                // null instead of the row (IDOR defense, task-20 case (c)).
+                let monitor = await findOneForTenant("monitor", " id = ? AND user_id = ? ", [
+                    monitorID,
+                    socket.userID,
+                ], socket.tenantID);
+                if (monitor == null) {
+                    throw new Error("Permission denied.");
+                }
                 const monitorData = [{ id: monitor.id, active: monitor.active }];
                 const preloadData = await Monitor.preparePreloadData(monitorData);
                 callback({
@@ -1313,15 +1359,19 @@ let needSetup = false;
 
                 const sqlHourOffset = Database.sqlHourOffset();
 
+                // G4.18: heartbeat is parent-anchored (ADR-0002 — no tenant_id
+                // column); the IN-subquery pins it to the caller's tenant so a
+                // foreign monitor_id yields an empty list.
                 let list = await R.getAll(
                     `
                     SELECT *
                     FROM heartbeat
                     WHERE monitor_id = ?
+                      AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)
                       AND time > ${sqlHourOffset}
                     ORDER BY time ASC
                 `,
-                    [monitorID, -period]
+                    [monitorID, socket.tenantID, -period]
                 );
 
                 callback({
@@ -1395,7 +1445,11 @@ let needSetup = false;
                 const startTime = Date.now();
 
                 // Check if this is a group monitor
-                const monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
+                // G4.18: tenant+user scoped lookup
+                const monitor = await findOneForTenant("monitor", " id = ? AND user_id = ? ", [
+                    monitorID,
+                    socket.userID,
+                ], socket.tenantID);
 
                 // Log with context about deletion type
                 if (monitor && monitor.type === "group") {
@@ -1477,7 +1531,8 @@ let needSetup = false;
                 checkLogin(socket);
                 // RBAC: read, viewer+ OK (no check needed).
 
-                const list = await R.findAll("tag");
+                // G4.18: tags are tenant-owned — list only the caller's tenant
+                const list = await findAllForTenant("tag", " 1=1 ", [], socket.tenantID);
 
                 callback({
                     ok: true,
@@ -1499,7 +1554,8 @@ let needSetup = false;
                 // monitors").
                 checkPermission(socket, PERMISSIONS.TAG_MANAGE);
 
-                let bean = R.dispense("tag");
+                // G4.18: born into the caller's tenant
+                let bean = dispenseForTenant("tag", socket.tenantID);
                 bean.name = tag.name;
                 bean.color = tag.color;
                 await R.store(bean);
@@ -1522,7 +1578,8 @@ let needSetup = false;
                 // G3 task-14: mutation — tag management is member+ (TAG_MANAGE).
                 checkPermission(socket, PERMISSIONS.TAG_MANAGE);
 
-                let bean = await R.findOne("tag", " id = ? ", [tag.id]);
+                // G4.18: tenant-scoped — another tenant's tag id resolves to null
+                let bean = await findOneForTenant("tag", " id = ? ", [tag.id], socket.tenantID);
                 if (bean == null) {
                     callback({
                         ok: false,
@@ -1555,7 +1612,8 @@ let needSetup = false;
                 // G3 task-14: mutation — tag management is member+ (TAG_MANAGE).
                 checkPermission(socket, PERMISSIONS.TAG_MANAGE);
 
-                await R.exec("DELETE FROM tag WHERE id = ? ", [tagID]);
+                // G4.18: tenant-scoped row-scoped delete
+                await execForTenant("DELETE FROM tag WHERE id = ? ", [tagID], socket.tenantID);
 
                 callback({
                     ok: true,
@@ -1577,6 +1635,22 @@ let needSetup = false;
                 // on monitor tagging is gated as MONITOR_CREATE (member+).
                 checkPermission(socket, PERMISSIONS.MONITOR_CREATE);
 
+                // G4.18: monitor_tag is parent-anchored (ADR-0002) — verify both
+                // parents belong to the caller's tenant before wiring the junction
+                const monitor = await findOneForTenant("monitor", " id = ? AND user_id = ? ", [
+                    monitorID,
+                    socket.userID,
+                ], socket.tenantID);
+                if (monitor == null) {
+                    throw new Error("You do not own this monitor.");
+                }
+                const tagBean = await findOneForTenant("tag", " id = ? ", [tagID], socket.tenantID);
+                if (tagBean == null) {
+                    throw new Error("Tag not found");
+                }
+
+                // G4.18 exemption: INSERT into a parent-anchored junction whose
+                // parents were verified in-tenant above.
                 await R.exec("INSERT INTO monitor_tag (tag_id, monitor_id, value) VALUES (?, ?, ?)", [
                     tagID,
                     monitorID,
@@ -1605,11 +1679,17 @@ let needSetup = false;
                 // on monitor tagging is gated as MONITOR_CREATE (member+).
                 checkPermission(socket, PERMISSIONS.MONITOR_CREATE);
 
-                await R.exec("UPDATE monitor_tag SET value = ? WHERE tag_id = ? AND monitor_id = ?", [
-                    value,
-                    tagID,
-                    monitorID,
-                ]);
+                // G4.18: parent-anchored junction — the IN-subquery pins the
+                // monitor to the caller's tenant (ADR-0002 pattern)
+                await R.exec(
+                    "UPDATE monitor_tag SET value = ? WHERE tag_id = ? AND monitor_id = ? " +
+                    "AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)", [
+                        value,
+                        tagID,
+                        monitorID,
+                        socket.tenantID,
+                    ]
+                );
 
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
@@ -1633,11 +1713,17 @@ let needSetup = false;
                 // a monitor is an attribute-edit → MONITOR_UPDATE (member+).
                 checkPermission(socket, PERMISSIONS.MONITOR_UPDATE);
 
-                await R.exec("DELETE FROM monitor_tag WHERE tag_id = ? AND monitor_id = ? AND value = ?", [
-                    tagID,
-                    monitorID,
-                    value,
-                ]);
+                // G4.18: parent-anchored junction — the IN-subquery pins the
+                // monitor to the caller's tenant (ADR-0002 pattern)
+                await R.exec(
+                    "DELETE FROM monitor_tag WHERE tag_id = ? AND monitor_id = ? AND value = ? " +
+                    "AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)", [
+                        tagID,
+                        monitorID,
+                        value,
+                        socket.tenantID,
+                    ]
+                );
 
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
@@ -1660,10 +1746,20 @@ let needSetup = false;
                 // RBAC: read, viewer+ OK (no check needed).
 
                 let count;
+                // G4.18: heartbeat is parent-anchored (ADR-0002 — no tenant_id
+                // column); the IN-subquery restricts every count to the caller's tenant
                 if (monitorID == null) {
-                    count = await R.count("heartbeat", "important = 1");
+                    count = await R.count(
+                        "heartbeat",
+                        "important = 1 AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)",
+                        [socket.tenantID]
+                    );
                 } else {
-                    count = await R.count("heartbeat", "monitor_id = ? AND important = 1", [monitorID]);
+                    count = await R.count(
+                        "heartbeat",
+                        "monitor_id = ? AND important = 1 AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)",
+                        [monitorID, socket.tenantID]
+                    );
                 }
 
                 callback({
@@ -1684,16 +1780,19 @@ let needSetup = false;
                 // RBAC: read, viewer+ OK (no check needed).
 
                 let list;
+                // G4.18: parent-anchored heartbeat rows — the IN-subquery pins
+                // every result to the caller's tenant (ADR-0002 pattern)
                 if (monitorID == null) {
                     list = await R.find(
                         "heartbeat",
                         `
                         important = 1
+                        AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)
                         ORDER BY time DESC
                         LIMIT ?
                         OFFSET ?
                     `,
-                        [count, offset]
+                        [socket.tenantID, count, offset]
                     );
                 } else {
                     list = await R.find(
@@ -1701,11 +1800,12 @@ let needSetup = false;
                         `
                         monitor_id = ?
                         AND important = 1
+                        AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)
                         ORDER BY time DESC
                         LIMIT ?
                         OFFSET ?
                     `,
-                        [monitorID, count, offset]
+                        [monitorID, socket.tenantID, count, offset]
                     );
                 }
 
@@ -1975,7 +2075,13 @@ let needSetup = false;
 
                 log.info("manage", `Clear Events Monitor: ${monitorID} User ID: ${socket.userID}`);
 
-                await R.exec("UPDATE heartbeat SET msg = ?, important = ? WHERE monitor_id = ? ", ["", "0", monitorID]);
+                // G4.18: parent-anchored heartbeat rows (ADR-0002) — the
+                // IN-subquery pins the update to the caller's tenant's monitor
+                await R.exec(
+                    "UPDATE heartbeat SET msg = ?, important = ? WHERE monitor_id = ? " +
+                    "AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?) ",
+                    ["", "0", monitorID, socket.tenantID]
+                );
 
                 callback({
                     ok: true,
@@ -2071,6 +2177,9 @@ let needSetup = false;
         log.debug("auth", "check auto login");
         if (await setting("disableAuth")) {
             log.info("auth", "Disabled Auth: auto login to admin");
+            // G4.18 exemption: single-user disabled-auth install — the sole
+            // global-identity user; tenant resolution happens in afterLogin.
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- disabled-auth bootstrap, user is global identity
             await afterLogin(socket, await R.findOne("user"));
             socket.emit("autoLogin");
         } else {
@@ -2111,11 +2220,28 @@ let needSetup = false;
  * providers to add
  * @returns {Promise<void>}
  */
-async function updateMonitorNotification(monitorID, notificationIDList) {
-    await R.exec("DELETE FROM monitor_notification WHERE monitor_id = ? ", [monitorID]);
+async function updateMonitorNotification(monitorID, notificationIDList, tenantID) {
+    // G4.18: parent-anchored junction (ADR-0002) — the IN-subquery pins the
+    // delete to monitors of the caller's tenant
+    await R.exec(
+        "DELETE FROM monitor_notification WHERE monitor_id = ? " +
+        "AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?) ",
+        [monitorID, tenantID]
+    );
 
     for (let notificationID in notificationIDList) {
         if (notificationIDList[notificationID]) {
+            // G4.18 defense-in-depth: refuse to wire a notification that is not
+            // in the caller's tenant (a cross-tenant id would silently route
+            // this monitor's alerts to another tenant's provider).
+            const notificationBean = await findOneForTenant("notification", " id = ? ", [
+                notificationID,
+            ], tenantID);
+            if (notificationBean == null) {
+                throw new Error("Notification not found or access denied.");
+            }
+            // G4.18 exemption: junction row inherits tenancy from both parents
+            // (monitor + notification), both verified above.
             let relation = R.dispense("monitor_notification");
             relation.monitor_id = monitorID;
             relation.notification_id = notificationID;
@@ -2246,6 +2372,9 @@ async function initDatabase(testMode = false) {
     // Patch the database
     await Database.patch(port, hostname);
 
+    // G4.18 exemption: setting is cross-tenant system config (no tenant_id
+    // column; documented permanent exemption from task-17)
+    // eslint-disable-next-line uptime-kuma/require-tenant-scope -- setting table is global system config
     let jwtSecretBean = await R.findOne("setting", " `key` = ? ", ["jwtSecret"]);
 
     if (!jwtSecretBean) {
@@ -2269,16 +2398,21 @@ async function initDatabase(testMode = false) {
  * Start the specified monitor
  * @param {number} userID ID of user who owns monitor
  * @param {number} monitorID ID of monitor to start
+ * @param {number} tenantID Active tenant of the calling session (G4.18)
  * @returns {Promise<void>}
  */
-async function startMonitor(userID, monitorID) {
-    await checkOwner(userID, monitorID);
+async function startMonitor(userID, monitorID, tenantID) {
+    await checkOwner(userID, monitorID, tenantID);
 
     log.info("manage", `Resume Monitor: ${monitorID} User ID: ${userID}`);
 
-    await R.exec("UPDATE monitor SET active = 1 WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+    // G4.18: tenant+user scoped activation
+    await execForTenant("UPDATE monitor SET active = 1 WHERE id = ? AND user_id = ? ", [
+        monitorID,
+        userID,
+    ], tenantID);
 
-    let monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
+    let monitor = await findOneForTenant("monitor", " id = ? ", [monitorID], tenantID);
 
     if (monitor.id in server.monitorList) {
         await server.monitorList[monitor.id].stop();
@@ -2292,24 +2426,30 @@ async function startMonitor(userID, monitorID) {
  * Restart a given monitor
  * @param {number} userID ID of user who owns monitor
  * @param {number} monitorID ID of monitor to start
+ * @param {number} tenantID Active tenant of the calling session (G4.18)
  * @returns {Promise<void>}
  */
-async function restartMonitor(userID, monitorID) {
-    return await startMonitor(userID, monitorID);
+async function restartMonitor(userID, monitorID, tenantID) {
+    return await startMonitor(userID, monitorID, tenantID);
 }
 
 /**
  * Pause a given monitor
  * @param {number} userID ID of user who owns monitor
  * @param {number} monitorID ID of monitor to start
+ * @param {number} tenantID Active tenant of the calling session (G4.18)
  * @returns {Promise<void>}
  */
-async function pauseMonitor(userID, monitorID) {
-    await checkOwner(userID, monitorID);
+async function pauseMonitor(userID, monitorID, tenantID) {
+    await checkOwner(userID, monitorID, tenantID);
 
     log.info("manage", `Pause Monitor: ${monitorID} User ID: ${userID}`);
 
-    await R.exec("UPDATE monitor SET active = 0 WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+    // G4.18: tenant+user scoped deactivation
+    await execForTenant("UPDATE monitor SET active = 0 WHERE id = ? AND user_id = ? ", [
+        monitorID,
+        userID,
+    ], tenantID);
 
     if (monitorID in server.monitorList) {
         await server.monitorList[monitorID].stop();
@@ -2322,6 +2462,10 @@ async function pauseMonitor(userID, monitorID) {
  * @returns {Promise<void>}
  */
 async function startMonitors() {
+    // G4.18 exemption: boot-time engine sweep before any session exists —
+    // deliberately cross-tenant (the monitoring engine owns all tenants'
+    // active monitors); tenant-scoped list emission is G5/task-19's concern.
+    // eslint-disable-next-line uptime-kuma/require-tenant-scope -- startup engine sweep, no session context (G5)
     let list = await R.find("monitor", " active = 1 ");
 
     for (let monitor of list) {
