@@ -1,0 +1,34 @@
+--- a/dist/routes/agents.js
++++ b/dist/routes/agents.js
+@@ -3118,19 +3118,24 @@
+         res.json(await runRedactions.redactForRun(run.companyId, run.id, redactCurrentUserValue({ ...decoratedRun, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) }, await getCurrentUserRedactionOptions())));
+     });
+     router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
+-        assertBoard(req);
+         const runId = req.params.runId;
+         const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
+         if (!existing)
+             return;
+-        // Stamp the cancellation as operator-initiated (this route is board-only).
+-        // Recovery reads this to stand down instead of classifying the cancelled
+-        // run as agent stranding and re-waking the agent the operator just stopped.
+-        const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+-            resultJson: {
++        const isAgentSelfCancel = req.actor?.type === "agent" && req.actor.agentId && existing.agentId === req.actor.agentId;
++        if (!isAgentSelfCancel) assertBoard(req);
++        const isSelfCancel = isAgentSelfCancel;
++        const cancelReason = isSelfCancel ? "Cancelled by owning agent (self-cancel)" : "Cancelled by a board operator";
++        const cancelResultJson = isSelfCancel ? {
++                cancelledByActorType: "agent",
++                cancelledByAgentId: req.actor.agentId,
++                selfCancel: true,
++            } : {
+                 cancelledByActorType: "user",
+                 cancelledByUserId: req.actor.userId ?? null,
+-            },
++            };
++        const run = await heartbeat.cancelRun(runId, cancelReason, {
++            resultJson: cancelResultJson,
+         });
+         if (run) {
+             await logActivity(db, {
