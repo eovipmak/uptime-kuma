@@ -1069,7 +1069,7 @@ let needSetup = false;
                 await server.sendUpdateMonitorIntoList(socket, bean.id);
 
                 if (monitor.active !== false) {
-                    await startMonitor(socket.userID, bean.id);
+                    await startMonitor(socket.userID, bean.id, socket.tenantID);
                 }
 
                 log.info("monitor", `Added Monitor: ${bean.id} User ID: ${socket.userID}`);
@@ -1255,7 +1255,7 @@ let needSetup = false;
                 await updateMonitorNotification(bean.id, monitor.notificationIDList, socket.tenantID);
 
                 if (await Monitor.isActive(bean.id, bean.active)) {
-                    await restartMonitor(socket.userID, bean.id);
+                    await restartMonitor(socket.userID, bean.id, socket.tenantID);
                 }
 
                 await server.sendUpdateMonitorIntoList(socket, bean.id);
@@ -1392,7 +1392,7 @@ let needSetup = false;
                 checkLogin(socket);
                 // G3 task-14: mutation — monitor pause/resume is member+ per task-13 matrix
                 checkPermission(socket, PERMISSIONS.MONITOR_PAUSE_RESUME);
-                await startMonitor(socket.userID, monitorID);
+                await startMonitor(socket.userID, monitorID, socket.tenantID);
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
                 callback({
@@ -1413,7 +1413,7 @@ let needSetup = false;
                 checkLogin(socket);
                 // G3 task-14: mutation — monitor pause/resume is member+ per task-13 matrix
                 checkPermission(socket, PERMISSIONS.MONITOR_PAUSE_RESUME);
-                await pauseMonitor(socket.userID, monitorID);
+                await pauseMonitor(socket.userID, monitorID, socket.tenantID);
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
                 callback({
@@ -2112,7 +2112,7 @@ let needSetup = false;
                 if (monitorID in server.monitorList) {
                     const monitor = server.monitorList[monitorID];
                     if (monitor.active) {
-                        await restartMonitor(socket.userID, monitorID);
+                        await restartMonitor(socket.userID, monitorID, socket.tenantID);
                     }
                 }
 
@@ -2145,7 +2145,7 @@ let needSetup = false;
                 for (let monitorID in server.monitorList) {
                     const monitor = server.monitorList[monitorID];
                     if (monitor.active) {
-                        await restartMonitor(socket.userID, monitorID);
+                        await restartMonitor(socket.userID, monitorID, socket.tenantID);
                     }
                 }
 
@@ -2261,11 +2261,12 @@ async function updateMonitorNotification(monitorID, notificationIDList, tenantID
  * Check if a given user owns a specific monitor
  * @param {number} userID ID of user to check
  * @param {number} monitorID ID of monitor to check
+ * @param {number} tenantID Active tenant of the calling session (G4.18)
  * @returns {Promise<void>}
  * @throws {Error} The specified user does not own the monitor
  */
-async function checkOwner(userID, monitorID) {
-    let row = await R.getRow("SELECT id FROM monitor WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+async function checkOwner(userID, monitorID, tenantID) {
+    let row = await findOneForTenant("monitor", " id = ? AND user_id = ? ", [monitorID, userID], tenantID);
 
     if (!row) {
         throw new Error("You do not own this monitor.");
