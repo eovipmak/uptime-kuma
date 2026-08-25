@@ -17,7 +17,6 @@ const { makeBadge } = require("badge-maker");
 const { Prometheus } = require("../prometheus");
 const Database = require("../database");
 const { UptimeCalculator } = require("../uptime-calculator");
-const { Settings } = require("../settings");
 // G2 task-11: push flow emits to the monitor's tenant-scoped user room
 const { userRoom } = require("../socket-handlers/tenant-room");
 const { TenantUser } = require("../model/tenant_user");
