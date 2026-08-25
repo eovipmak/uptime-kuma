@@ -1,0 +1,11 @@
+{
+    "name": "eslint-plugin-uptime-kuma",
+    "version": "0.0.0",
+    "private": true,
+    "description": "Local ESLint plugin for Uptime Kuma (multi-tenant hardening rules). Linked into the project via a file: devDependency pointing at server/repository/eslint-rules.",
+    "main": "index.js",
+    "license": "MIT",
+    "engines": {
+        "node": ">=14"
+    }
+}
