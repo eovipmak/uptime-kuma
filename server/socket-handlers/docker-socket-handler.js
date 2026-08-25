@@ -1,5 +1,7 @@
 const { sendDockerHostList } = require("../client");
 const { checkLogin } = require("../util-server");
+const { checkPermission } = require("../rbac/socket-rbac");
+const { PERMISSIONS } = require("../rbac/permissions");
 const { DockerHost } = require("../docker");
 const { log } = require("../../src/util");
 
@@ -12,6 +14,10 @@ module.exports.dockerSocketHandler = (socket) => {
     socket.on("addDockerHost", async (dockerHost, dockerHostID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — Docker host management is tenant_admin
+            // (task-13 matrix). Also covers edit: saving with an existing
+            // dockerHostID updates the host.
+            checkPermission(socket, PERMISSIONS.DOCKER_HOST_MANAGE);
 
             let dockerHostBean = await DockerHost.save(dockerHost, dockerHostID, socket.userID);
             await sendDockerHostList(socket);
@@ -33,6 +39,8 @@ module.exports.dockerSocketHandler = (socket) => {
     socket.on("deleteDockerHost", async (dockerHostID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — Docker host management is tenant_admin (task-13 matrix)
+            checkPermission(socket, PERMISSIONS.DOCKER_HOST_MANAGE);
 
             await DockerHost.delete(dockerHostID, socket.userID);
             await sendDockerHostList(socket);
@@ -53,6 +61,11 @@ module.exports.dockerSocketHandler = (socket) => {
     socket.on("testDockerHost", async (dockerHost, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: connectivity test with Docker-host credentials against
+            // a caller-supplied target — an admin-grade diagnostic on the docker
+            // host domain, so it is gated like the other host mutations instead
+            // of being left as a viewer-readable probe.
+            checkPermission(socket, PERMISSIONS.DOCKER_HOST_MANAGE);
 
             let amount = await DockerHost.testDockerHost(dockerHost);
             let msg;

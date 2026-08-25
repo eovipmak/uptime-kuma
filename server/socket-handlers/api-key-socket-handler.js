@@ -1,4 +1,6 @@
 const { checkLogin } = require("../util-server");
+const { checkPermission } = require("../rbac/socket-rbac");
+const { PERMISSIONS } = require("../rbac/permissions");
 const { log } = require("../../src/util");
 const { R } = require("redbean-node");
 const { nanoid } = require("nanoid");
@@ -18,6 +20,8 @@ module.exports.apiKeySocketHandler = (socket) => {
     socket.on("addAPIKey", async (key, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — API key management is tenant_admin (task-13 matrix)
+            checkPermission(socket, PERMISSIONS.API_KEY_MANAGE);
 
             let clearKey = nanoid(40);
             let hashedKey = await passwordHash.generate(clearKey);
@@ -54,6 +58,10 @@ module.exports.apiKeySocketHandler = (socket) => {
     socket.on("getAPIKeyList", async (callback) => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed). Existing behavior shows the
+            // key list to every logged-in member of the tenant (no admin-only
+            // hiding), so per task-14 item 2 the read stays open.
+
             await sendAPIKeyList(socket);
             callback({
                 ok: true,
@@ -70,6 +78,8 @@ module.exports.apiKeySocketHandler = (socket) => {
     socket.on("deleteAPIKey", async (keyID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — API key management is tenant_admin (task-13 matrix)
+            checkPermission(socket, PERMISSIONS.API_KEY_MANAGE);
 
             log.debug("apikeys", `Deleted API Key: ${keyID} User ID: ${socket.userID}`);
 
@@ -95,6 +105,8 @@ module.exports.apiKeySocketHandler = (socket) => {
     socket.on("disableAPIKey", async (keyID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — toggling key state is API key management (tenant_admin)
+            checkPermission(socket, PERMISSIONS.API_KEY_MANAGE);
 
             log.debug("apikeys", `Disabled Key: ${keyID} User ID: ${socket.userID}`);
 
@@ -120,6 +132,8 @@ module.exports.apiKeySocketHandler = (socket) => {
     socket.on("enableAPIKey", async (keyID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — toggling key state is API key management (tenant_admin)
+            checkPermission(socket, PERMISSIONS.API_KEY_MANAGE);
 
             log.debug("apikeys", `Enabled Key: ${keyID} User ID: ${socket.userID}`);
 

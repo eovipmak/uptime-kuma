@@ -6,6 +6,8 @@ module.exports.chartSocketHandler = (socket) => {
     socket.on("getMonitorChartData", async (monitorID, period, callback) => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed) — task-14 item 9: this
+            // handler has no mutation events; monitor.read is viewer-level.
 
             log.debug("monitor", `Get Monitor Chart Data: ${monitorID} User ID: ${socket.userID}`);
 

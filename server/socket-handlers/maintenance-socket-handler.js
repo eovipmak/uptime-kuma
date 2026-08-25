@@ -1,4 +1,7 @@
 const { checkLogin } = require("../util-server");
+// G3 task-14: RBAC enforcement (see per-event annotations below)
+const { checkPermission } = require("../rbac/socket-rbac");
+const { PERMISSIONS } = require("../rbac/permissions");
 const { log } = require("../../src/util");
 const { R } = require("redbean-node");
 const apicache = require("../modules/apicache");
@@ -16,6 +19,8 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("addMaintenance", async (maintenance, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — maintenance management is tenant_admin (task-13 matrix)
+            checkPermission(socket, PERMISSIONS.MAINTENANCE_MANAGE);
 
             log.debug("maintenance", maintenance);
 
@@ -46,6 +51,8 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("editMaintenance", async (maintenance, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — maintenance management is tenant_admin (task-13 matrix)
+            checkPermission(socket, PERMISSIONS.MAINTENANCE_MANAGE);
 
             let bean = server.getMaintenance(maintenance.id);
 
@@ -77,6 +84,11 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("addMonitorMaintenance", async (maintenanceID, monitors, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — rewires the monitor↔maintenance join rows.
+            // Not enumerated individually in task-14, but it is a maintenance-
+            // domain write; MAINTENANCE_MANAGE is the matching constant from the
+            // frozen task-13 enum (no new permission invented).
+            checkPermission(socket, PERMISSIONS.MAINTENANCE_MANAGE);
 
             await R.exec("DELETE FROM monitor_maintenance WHERE maintenance_id = ?", [maintenanceID]);
 
@@ -109,6 +121,10 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("addMaintenanceStatusPage", async (maintenanceID, statusPages, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — rewires the maintenance↔status-page join
+            // rows. Maintenance-domain management → MAINTENANCE_MANAGE (see
+            // addMonitorMaintenance annotation).
+            checkPermission(socket, PERMISSIONS.MAINTENANCE_MANAGE);
 
             await R.exec("DELETE FROM maintenance_status_page WHERE maintenance_id = ?", [maintenanceID]);
 
@@ -140,6 +156,7 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("getMaintenance", async (maintenanceID, callback) => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed).
 
             log.debug("maintenance", `Get Maintenance: ${maintenanceID} User ID: ${socket.userID}`);
 
@@ -160,6 +177,8 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("getMaintenanceList", async (callback) => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed).
+
             await server.sendMaintenanceList(socket);
             callback({
                 ok: true,
@@ -176,6 +195,7 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("getMonitorMaintenance", async (maintenanceID, callback) => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed).
 
             log.debug("maintenance", `Get Monitors for Maintenance: ${maintenanceID} User ID: ${socket.userID}`);
 
@@ -200,6 +220,7 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("getMaintenanceStatusPage", async (maintenanceID, callback) => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed).
 
             log.debug("maintenance", `Get Status Pages for Maintenance: ${maintenanceID} User ID: ${socket.userID}`);
 
@@ -224,6 +245,8 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("deleteMaintenance", async (maintenanceID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — maintenance management is tenant_admin (task-13 matrix)
+            checkPermission(socket, PERMISSIONS.MAINTENANCE_MANAGE);
 
             log.debug("maintenance", `Delete Maintenance: ${maintenanceID} User ID: ${socket.userID}`);
 
@@ -254,6 +277,8 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("pauseMaintenance", async (maintenanceID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — maintenance management is tenant_admin (task-13 matrix)
+            checkPermission(socket, PERMISSIONS.MAINTENANCE_MANAGE);
 
             log.debug("maintenance", `Pause Maintenance: ${maintenanceID} User ID: ${socket.userID}`);
 
@@ -287,6 +312,8 @@ module.exports.maintenanceSocketHandler = (socket) => {
     socket.on("resumeMaintenance", async (maintenanceID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — maintenance management is tenant_admin (task-13 matrix)
+            checkPermission(socket, PERMISSIONS.MAINTENANCE_MANAGE);
 
             log.debug("maintenance", `Resume Maintenance: ${maintenanceID} User ID: ${socket.userID}`);
 

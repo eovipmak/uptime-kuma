@@ -2,6 +2,8 @@ const { log } = require("../../src/util");
 const { Settings } = require("../settings");
 const { sendInfo } = require("../client");
 const { checkLogin } = require("../util-server");
+const { checkPermission } = require("../rbac/socket-rbac");
+const { PERMISSIONS } = require("../rbac/permissions");
 const { games } = require("gamedig");
 const { testChrome } = require("../monitor-types/real-browser-monitor-type");
 const { getPM2ProcessList } = require("../util/pm2");
@@ -45,6 +47,12 @@ module.exports.generalSocketHandler = (socket, server) => {
     socket.on("initServerTimezone", async (timezone) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — persists server-wide timezone settings
+            // (Settings.set + server.setTimezone), so it needs tenant_admin.
+            // Safe to gate: the server only asks the client for this after
+            // afterLogin, so socket.role is always set here; first-run is the
+            // default-tenant admin (G1 task-06).
+            checkPermission(socket, PERMISSIONS.TENANT_SETTINGS_UPDATE);
             log.debug("generalSocketHandler", "Timezone: " + timezone);
             await Settings.set("initServerTimezone", true);
             await server.setTimezone(timezone);
@@ -57,6 +65,8 @@ module.exports.generalSocketHandler = (socket, server) => {
     socket.on("getGameList", async (callback) => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed).
+
             callback({
                 ok: true,
                 gameList: getGameList(),
@@ -72,6 +82,11 @@ module.exports.generalSocketHandler = (socket, server) => {
     socket.on("getPM2ProcessList", async (callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: admin-grade server diagnostic exposed on the settings
+            // screen — gated like the other tenant-settings mutations per
+            // task-14 item 1 (TENANT_SETTINGS_UPDATE, tenant_admin).
+            checkPermission(socket, PERMISSIONS.TENANT_SETTINGS_UPDATE);
+
             callback({
                 ok: true,
                 processList: await getPM2ProcessList(),
@@ -87,6 +102,12 @@ module.exports.generalSocketHandler = (socket, server) => {
     socket.on("testChrome", (executable, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: spawns a process from a caller-supplied executable
+            // path — admin-grade server diagnostic on the settings screen,
+            // gated like getPM2ProcessList per task-14 item 1
+            // (TENANT_SETTINGS_UPDATE, tenant_admin).
+            checkPermission(socket, PERMISSIONS.TENANT_SETTINGS_UPDATE);
+
             // Just noticed that await call could block the whole socket.io server!!! Use pure promise instead.
             testChrome(executable)
                 .then((version) => {
@@ -116,6 +137,9 @@ module.exports.generalSocketHandler = (socket, server) => {
     socket.on("getPushExample", async (language, callback) => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed) — returns bundled push
+            // example source from extra/push-examples.
+
             if (!/^[a-z-]+$/.test(language)) {
                 throw new Error("Invalid language");
             }
@@ -152,6 +176,10 @@ module.exports.generalSocketHandler = (socket, server) => {
     socket.on("disconnectOtherSocketClients", async () => {
         try {
             checkLogin(socket);
+            // RBAC: deliberately not gated (self-service) — "log out my other
+            // sessions" acts only on sockets of the calling user themselves
+            // (socket.userID, excluding socket.id), never on another user's or
+            // the tenant's resources. Same rationale as changePassword/2FA.
             server.disconnectAllSocketClients(socket.userID, socket.id);
         } catch (e) {
             log.warn("disconnectAllSocketClients", e.message);

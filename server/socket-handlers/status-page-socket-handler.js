@@ -1,5 +1,8 @@
 const { R } = require("redbean-node");
 const { checkLogin } = require("../util-server");
+// G3 task-14: RBAC enforcement (see per-event annotations below)
+const { checkPermission } = require("../rbac/socket-rbac");
+const { PERMISSIONS } = require("../rbac/permissions");
 const dayjs = require("dayjs");
 const { log } = require("../../src/util");
 const ImageDataURI = require("../image-data-uri");
@@ -34,6 +37,11 @@ module.exports.statusPageSocketHandler = (socket) => {
     socket.on("postIncident", async (slug, incident, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — incident management. Task-14 does not
+            // enumerate this fork's incident events individually; INCIDENT_MANAGE
+            // is the matching constant from the frozen task-13 enum (member+,
+            // no new permission invented).
+            checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
             let statusPageID = await StatusPage.slugToID(slug);
 
@@ -84,6 +92,9 @@ module.exports.statusPageSocketHandler = (socket) => {
     socket.on("unpinIncident", async (slug, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — incident management (see postIncident
+            // annotation; INCIDENT_MANAGE, member+).
+            checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
             let statusPageID = await StatusPage.slugToID(slug);
 
@@ -102,6 +113,9 @@ module.exports.statusPageSocketHandler = (socket) => {
 
     socket.on("getIncidentHistory", async (slug, cursor, callback) => {
         try {
+            // RBAC: read, viewer+ OK — deliberately no checkLogin/check here:
+            // this read also serves public status-page contexts (isPublic
+            // filtering happens inside StatusPage.getIncidentHistory).
             let statusPageID = await StatusPage.slugToID(slug);
             if (!statusPageID) {
                 throw new Error("slug is not found");
@@ -124,6 +138,9 @@ module.exports.statusPageSocketHandler = (socket) => {
     socket.on("editIncident", async (slug, incidentID, incident, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — incident management (see postIncident
+            // annotation; INCIDENT_MANAGE, member+).
+            checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
             let statusPageID = await StatusPage.slugToID(slug);
             if (!statusPageID) {
@@ -187,6 +204,9 @@ module.exports.statusPageSocketHandler = (socket) => {
     socket.on("deleteIncident", async (slug, incidentID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — incident management (see postIncident
+            // annotation; INCIDENT_MANAGE, member+).
+            checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
             let statusPageID = await StatusPage.slugToID(slug);
             if (!statusPageID) {
@@ -227,6 +247,9 @@ module.exports.statusPageSocketHandler = (socket) => {
     socket.on("resolveIncident", async (slug, incidentID, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — incident management (see postIncident
+            // annotation; INCIDENT_MANAGE, member+).
+            checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
             let statusPageID = await StatusPage.slugToID(slug);
             if (!statusPageID) {
@@ -268,6 +291,11 @@ module.exports.statusPageSocketHandler = (socket) => {
     socket.on("getStatusPage", async (slug, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: read, but explicitly gated with STATUS_PAGE_READ
+            // (viewer+) per task-14 item 6 — status pages have both public and
+            // authenticated views, so the authenticated editor read is
+            // deliberate rather than default-open.
+            checkPermission(socket, PERMISSIONS.STATUS_PAGE_READ);
 
             let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
 
@@ -292,6 +320,10 @@ module.exports.statusPageSocketHandler = (socket) => {
     socket.on("saveStatusPage", async (slug, config, imgDataUrl, publicGroupList, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — updates status page config/slug/logo and
+            // published group layout → STATUS_PAGE_UPDATE (tenant_admin,
+            // task-13 matrix).
+            checkPermission(socket, PERMISSIONS.STATUS_PAGE_UPDATE);
 
             // Save Config
             let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
@@ -436,6 +468,9 @@ module.exports.statusPageSocketHandler = (socket) => {
     socket.on("addStatusPage", async (title, slug, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — creates a status page → STATUS_PAGE_CREATE
+            // (tenant_admin, task-13 matrix).
+            checkPermission(socket, PERMISSIONS.STATUS_PAGE_CREATE);
 
             title = title?.trim();
             slug = slug?.trim();
@@ -484,6 +519,9 @@ module.exports.statusPageSocketHandler = (socket) => {
 
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — destructive (drops incidents, groups and
+            // the page itself) → STATUS_PAGE_DELETE (tenant_admin).
+            checkPermission(socket, PERMISSIONS.STATUS_PAGE_DELETE);
 
             let statusPageID = await StatusPage.slugToID(slug);
 
