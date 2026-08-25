@@ -60,6 +60,16 @@ function isDemoSeedAllowed() {
 const REFUSAL_MESSAGE = "Refusing to run outside dev/demo. Set UPTIME_KUMA_DEMO_SEED=1 to override.";
 
 /**
+ * Monitor types this seed may create. Every value MUST be a key of
+ * UptimeKumaServer.monitorTypeList (server/uptime-kuma-server.js): TCP monitors
+ * are registered under "port", NOT "tcp". ensureMonitor() rejects unknown
+ * types at seed time so a bad constant fails fast here instead of surfacing
+ * as "Unknown Monitor Type" on every beat of the seeded monitor.
+ * @type {Set<string>}
+ */
+const VALID_MONITOR_TYPES = new Set([ "http", "port" ]);
+
+/**
  * Find or create a tenant by its unique slug.
  * @param {Knex} knex A knex instance connected to the Uptime Kuma database
  * @param {{name: string, slug: string}} tenantDef Tenant definition from DEMO_TENANTS
@@ -117,10 +127,18 @@ async function ensureTenantAdminMembership(knex, tenantId, adminUserId) {
  * @param {number} monitorDef.tenantId Owning tenant id
  * @param {number} monitorDef.userId Admin user id stored on the monitor
  * @param {string} monitorDef.name Monitor name (unique per tenant in this seed)
- * @param {string} monitorDef.type Monitor type ("http" or "tcp")
+ * @param {string} monitorDef.type Monitor type; must be a key of
+ * UptimeKumaServer.monitorTypeList ("http" or "port" for TCP) and a member of VALID_MONITOR_TYPES
  * @returns {Promise<{id: number, state: string}>} Monitor id plus "created"|"skipped"
  */
 async function ensureMonitor(knex, monitorDef) {
+    if (!VALID_MONITOR_TYPES.has(monitorDef.type)) {
+        throw new Error(
+            `Invalid monitor type "${monitorDef.type}" for monitor \`${monitorDef.name}\`. `
+            + `Valid types: ${[ ...VALID_MONITOR_TYPES ].join(", ")} — must match a UptimeKumaServer.monitorTypeList key.`
+        );
+    }
+
     const existing = await knex("monitor")
         .where({ tenant_id: monitorDef.tenantId, name: monitorDef.name })
         .first();
@@ -313,7 +331,7 @@ async function seed(knex) {
             tenantId: tenant.id,
             userId: admin.id,
             name: `${tenantDef.name} API`,
-            type: "tcp",
+            type: "port",
             hostname: "example.com",
             port: 443,
         });
