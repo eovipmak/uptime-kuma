@@ -44,6 +44,12 @@ const {
 } = require("../util-server");
 const { R } = require("redbean-node");
 const { BeanModel } = require("redbean-node/dist/bean-model");
+// G4.19: tenant-safe query wrappers (G4.17 contract)
+const {
+    findOneForTenant,
+    execForTenant,
+    resolveTenantId,
+} = require("../repository/tenant-repo");
 // G2 task-11: tenant-partitioned room keys for live emits
 const { userRoom } = require("../socket-handlers/tenant-room");
 const TenantUser = require("./tenant_user");
@@ -280,6 +286,7 @@ class Monitor extends BeanModel {
      * monitor
      */
     async getCertExpiry(monitorID) {
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_tls_info is FK-anchored to monitor (no tenant_id column by G1 design); the monitor id is supplied by a tenant-scoped caller
         let tlsInfoBean = await R.findOne("monitor_tls_info", "monitor_id = ?", [monitorID]);
         let tlsInfo;
         if (tlsInfoBean) {
@@ -445,6 +452,7 @@ class Monitor extends BeanModel {
             let tlsInfo = undefined;
 
             if (!previousBeat || this.type === "push") {
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- heartbeat is FK-anchored to monitor (no tenant_id column by G1 design); this bean was loaded through a tenant-scoped path
                 previousBeat = await R.findOne("heartbeat", " monitor_id = ? ORDER BY time DESC", [this.id]);
                 if (previousBeat) {
                     retries = previousBeat.retries;
@@ -453,6 +461,7 @@ class Monitor extends BeanModel {
 
             const isFirstBeat = !previousBeat;
 
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- heartbeat rows carry no tenant_id column (G1); the row is born under this tenant-verified monitor anchor
             let bean = R.dispense("heartbeat");
             bean.monitor_id = this.id;
             bean.time = R.isoDateTimeMillis(dayjs.utc());
@@ -1267,9 +1276,11 @@ class Monitor extends BeanModel {
      * @returns {Promise<object>} Updated certificate
      */
     async updateTlsInfo(checkCertificateResult) {
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_tls_info is FK-anchored to monitor (no tenant_id column by G1 design); this is a tenant-loaded monitor bean
         let tlsInfoBean = await R.findOne("monitor_tls_info", "monitor_id = ?", [this.id]);
 
         if (tlsInfoBean == null) {
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- child row born under this monitor's anchor; the table has no tenant_id column (G1)
             tlsInfoBean = R.dispense("monitor_tls_info");
             tlsInfoBean.monitor_id = this.id;
         } else {
@@ -1283,6 +1294,7 @@ class Monitor extends BeanModel {
                 if (isValidObjects) {
                     if (oldCertInfo.certInfo.fingerprint256 !== checkCertificateResult.certInfo.fingerprint256) {
                         log.debug("monitor", "Resetting sent_history");
+                        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- notification_sent_history is FK-anchored to monitor (no tenant_id column by G1 design); scoped by this tenant-loaded bean's id
                         await R.exec(
                             "DELETE FROM notification_sent_history WHERE type = 'certificate' AND monitor_id = ?",
                             [this.id]
@@ -1374,10 +1386,23 @@ class Monitor extends BeanModel {
      * @param {Server} io Socket server instance
      * @param {number} monitorID ID of monitor to send
      * @param {number} userID ID of user to send to
-     * @param {number} tenantID Active tenant of the user (G2 task-11)
+     * @param {number|null} tenantID Active tenant of the user (G2 task-11);
+     * G4.19 scopes the underlying read: the monitor must belong to this tenant.
+     * When omitted, falls back to the seeded default tenant (legacy path).
      * @returns {Promise<void>}
      */
     static async sendCertInfo(io, monitorID, userID, tenantID) {
+        const scopedTenantId = await resolveTenantId(tenantID, "Monitor.sendCertInfo");
+
+        // Tenant guard (G4.19): only emit cert info when the monitor is visible
+        // to this tenant; otherwise emit nothing (fail closed).
+        const monitor = await findOneForTenant("monitor", " id = ? ", [monitorID], scopedTenantId);
+        if (!monitor) {
+            log.debug("monitor", `sendCertInfo: monitor ${monitorID} not found in tenant ${scopedTenantId}; skipping`);
+            return;
+        }
+
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_tls_info is FK-anchored to monitor; tenancy verified via findOneForTenant above
         let tlsInfo = await R.findOne("monitor_tls_info", "monitor_id = ?", [monitorID]);
         if (tlsInfo != null) {
             io.to(userRoom(tenantID, userID)).emit("certInfo", monitorID, tlsInfo.info_json);
@@ -1389,11 +1414,13 @@ class Monitor extends BeanModel {
      * @param {Server} io Socket server instance
      * @param {number} monitorID ID of monitor to send
      * @param {number} userID ID of user to send to
-     * @param {number} tenantID Active tenant of the user (G2 task-11)
+     * @param {number|null} tenantID Active tenant of the user (G2 task-11);
+     * G4.19 scopes the underlying read to this tenant (fail closed).
      * @returns {Promise<void>}
      */
     static async sendDomainInfo(io, monitorID, userID, tenantID) {
-        const monitor = await R.findOne("monitor", "id = ?", [monitorID]);
+        const scopedTenantId = await resolveTenantId(tenantID, "Monitor.sendDomainInfo");
+        const monitor = await findOneForTenant("monitor", "id = ?", [monitorID], scopedTenantId);
 
         try {
             const supportInfo = await DomainExpiry.checkSupport(monitor);
@@ -1600,6 +1627,7 @@ class Monitor extends BeanModel {
         }
 
         if (sent) {
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- INSERT bookkeeping row FK-anchored to this tenant-loaded monitor bean; notification_sent_history has no tenant_id column (G1)
             await R.exec("INSERT INTO notification_sent_history (type, monitor_id, days) VALUES(?, ?, ?)", [
                 "certificate",
                 this.id,
@@ -1611,9 +1639,24 @@ class Monitor extends BeanModel {
     /**
      * Get the status of the previous heartbeat
      * @param {number} monitorID ID of monitor to check
+     * @param {number|null} tenantId Active tenant of the caller (G4.19). The
+     * monitor is first resolved through a tenant-scoped read; when it does not
+     * belong to this tenant, null is returned (fail closed). When omitted,
+     * falls back to the seeded default tenant so legacy in-process callers
+     * keep working (logged, never silent).
      * @returns {Promise<LooseObject<any>>} Previous heartbeat
      */
-    static async getPreviousHeartbeat(monitorID) {
+    static async getPreviousHeartbeat(monitorID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Monitor.getPreviousHeartbeat");
+
+        // Tenant guard (G4.19): verify the monitor belongs to the caller's
+        // tenant before touching its heartbeat chain.
+        const monitor = await findOneForTenant("monitor", " id = ? ", [monitorID], scopedTenantId);
+        if (!monitor) {
+            return null;
+        }
+
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- heartbeat is FK-anchored to monitor; tenancy verified via findOneForTenant above (the subquery shape cannot carry a tenant_id filter — heartbeat has no such column by G1 design)
         return await R.findOne("heartbeat", " id = (select MAX(id) from heartbeat where monitor_id = ?)", [monitorID]);
     }
 
@@ -2002,19 +2045,30 @@ class Monitor extends BeanModel {
     /**
      * Unlinks all children of the group monitor
      * @param {number} groupID ID of group to remove children of
+     * @param {number|null} tenantId Active tenant of the caller (G4.19); the
+     * UPDATE is tenant-scoped so only this tenant's monitors are unlinked.
+     * When omitted, falls back to the seeded default tenant (legacy path).
      * @returns {Promise<void>}
      */
-    static async unlinkAllChildren(groupID) {
-        return await R.exec("UPDATE `monitor` SET parent = ? WHERE parent = ? ", [null, groupID]);
+    static async unlinkAllChildren(groupID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Monitor.unlinkAllChildren");
+        // Multi-row by design: every direct child of the group is unlinked.
+        return await execForTenant("UPDATE `monitor` SET parent = ? WHERE parent = ? ", [null, groupID], scopedTenantId, {
+            requireId: false,
+        });
     }
 
     /**
      * Delete a monitor from the system
      * @param {number} monitorID ID of the monitor to delete
      * @param {number} userID ID of the user who owns the monitor
+     * @param {number|null} tenantId Active tenant of the caller (G4.19); the
+     * DELETE only affects a monitor of this tenant (cross-tenant ids affect
+     * zero rows, which task-20's IDOR suite asserts). When omitted, falls back
+     * to the seeded default tenant (legacy path).
      * @returns {Promise<void>}
      */
-    static async deleteMonitor(monitorID, userID) {
+    static async deleteMonitor(monitorID, userID, tenantId = null) {
         const server = UptimeKumaServer.getInstance();
 
         // Stop the monitor if it's running
@@ -2023,32 +2077,40 @@ class Monitor extends BeanModel {
             delete server.monitorList[monitorID];
         }
 
-        // Delete from database
-        await R.exec("DELETE FROM monitor WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+        // Delete from database (tenant + ownership scoped)
+        const scopedTenantId = await resolveTenantId(tenantId, "Monitor.deleteMonitor");
+        await execForTenant("DELETE FROM monitor WHERE id = ? AND user_id = ? ", [monitorID, userID], scopedTenantId);
     }
 
     /**
      * Recursively delete a monitor and all its descendants
      * @param {number} monitorID ID of the monitor to delete
      * @param {number} userID ID of the user who owns the monitor
+     * @param {number|null} tenantId Active tenant of the caller (G4.19);
+     * threaded into every recursive delete; see deleteMonitor(). When omitted,
+     * falls back to the seeded default tenant (legacy path).
      * @returns {Promise<void>}
      */
-    static async deleteMonitorRecursively(monitorID, userID) {
-        // Check if this monitor is a group
-        const monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, userID]);
+    static async deleteMonitorRecursively(monitorID, userID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Monitor.deleteMonitorRecursively");
+
+        // Check if this monitor is a group (tenant + ownership scoped)
+        const monitor = await findOneForTenant("monitor", " id = ? AND user_id = ? ", [monitorID, userID], scopedTenantId);
 
         if (monitor && monitor.type === "group") {
-            // Get all children and delete them recursively
+            // Get all children and delete them recursively.
+            // getChildren returns rows anchored to this tenant-verified parent;
+            // each child id re-verifies through deleteMonitor's tenant guard.
             const children = await Monitor.getChildren(monitorID);
             if (children && children.length > 0) {
                 for (const child of children) {
-                    await Monitor.deleteMonitorRecursively(child.id, userID);
+                    await Monitor.deleteMonitorRecursively(child.id, userID, scopedTenantId);
                 }
             }
         }
 
         // Delete the monitor itself
-        await Monitor.deleteMonitor(monitorID, userID);
+        await Monitor.deleteMonitor(monitorID, userID, scopedTenantId);
     }
 
     /**

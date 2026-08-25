@@ -1,5 +1,6 @@
 const { BeanModel } = require("redbean-node/dist/bean-model");
 const { R } = require("redbean-node");
+const { dispenseForTenant, resolveTenantId } = require("../repository/tenant-repo");
 const dayjs = require("dayjs");
 
 class APIKey extends BeanModel {
@@ -55,11 +56,15 @@ class APIKey extends BeanModel {
      * Create a new API Key and store it in the database
      * @param {object} key Object sent by client
      * @param {int} userID ID of socket user
+     * @param {number|null} tenantId Active tenant of the caller (G4.19). When
+     * omitted, falls back to the seeded default tenant so legacy in-process
+     * callers keep working (logged, never silent).
      * @returns {Promise<bean>} API key
      */
-    static async save(key, userID) {
+    static async save(key, userID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "APIKey.save");
         let bean;
-        bean = R.dispense("api_key");
+        bean = dispenseForTenant("api_key", scopedTenantId);
 
         bean.key = key.key;
         bean.name = key.name;

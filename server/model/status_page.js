@@ -1,5 +1,7 @@
 const { BeanModel } = require("redbean-node/dist/bean-model");
 const { R } = require("redbean-node");
+// G4.19: tenant-safe query wrappers (G4.17 contract)
+const { findAllForTenant, resolveTenantId } = require("../repository/tenant-repo");
 // G2 task-11: tenant-partitioned room key for user-scoped emits
 const { userRoom } = require("../socket-handlers/tenant-room");
 const cheerio = require("cheerio");
@@ -38,6 +40,7 @@ class StatusPage extends BeanModel {
      * @returns {Promise<void>}
      */
     static async handleStatusPageRSSResponse(response, slug, request) {
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- public unauthenticated read; tenant resolved via hostname in G2 router (task-19 exemption contract)
         let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
 
         if (statusPage) {
@@ -63,6 +66,7 @@ class StatusPage extends BeanModel {
             slug = "default";
         }
 
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- public unauthenticated read; tenant resolved via hostname in G2 router (task-19 exemption contract)
         let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
 
         if (statusPage) {
@@ -283,6 +287,7 @@ class StatusPage extends BeanModel {
 
         for (let monitorGroup of publicGroupList) {
             for (const monitor of monitorGroup.monitorList) {
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- heartbeat is FK-anchored to monitor; the monitor list comes from a tenant-resolved status page bean
                 const heartbeat = await R.findOne("heartbeat", "monitor_id = ? ORDER BY time DESC", [monitor.id]);
                 if (heartbeat) {
                     heartbeats.push({
@@ -317,6 +322,7 @@ class StatusPage extends BeanModel {
         const config = await statusPage.toPublicJSON();
 
         // All active incidents
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident is FK-anchored to status_page (no tenant_id column by G1 design); statusPage bean is tenant-resolved upstream
         let incidents = await R.find(
             "incident",
             "pin = 1 AND active = 1 AND status_page_id = ? ORDER BY created_date DESC",
@@ -330,6 +336,7 @@ class StatusPage extends BeanModel {
         const publicGroupList = [];
         const showTags = !!statusPage.show_tags;
 
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- group rows are FK-anchored to this tenant-resolved status page (status_page_id)
         const list = await R.find("group", "public = 1 AND status_page_id = ? ORDER BY weight", [statusPage.id]);
 
         for (let groupBean of list) {
@@ -363,12 +370,15 @@ class StatusPage extends BeanModel {
      * Send status page list to client
      * @param {Server} io io Socket server instance
      * @param {Socket} socket Socket.io instance
-     * @returns {Promise<Bean[]>} Status page list
+     * @returns {Promise<Bean[]>} Status page list (this tenant's pages only, G4.19)
      */
     static async sendStatusPageList(io, socket) {
         let result = {};
 
-        let list = await R.findAll("status_page", " ORDER BY title ");
+        // G4.19: was a global findAll across every tenant; now scoped so
+        // tenant A never receives tenant B's status pages.
+        const scopedTenantId = await resolveTenantId(socket.tenantID, "StatusPage.sendStatusPageList");
+        let list = await findAllForTenant("status_page", " 1=1 ", [], scopedTenantId, " ORDER BY title ");
 
         for (let item of list) {
             result[item.id] = await item.toJSON();
@@ -520,12 +530,14 @@ class StatusPage extends BeanModel {
         let incidents;
 
         if (cursor) {
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident is FK-anchored to status_page; statusPageId comes from an authenticated socket or a hostname-resolved public page
             incidents = await R.find(
                 "incident",
                 " status_page_id = ? AND created_date < ? ORDER BY created_date DESC LIMIT ? ",
                 [statusPageId, cursor, INCIDENT_PAGE_SIZE]
             );
         } else {
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident is FK-anchored to status_page; statusPageId comes from an authenticated socket or a hostname-resolved public page
             incidents = await R.find("incident", " status_page_id = ? ORDER BY created_date DESC LIMIT ? ", [
                 statusPageId,
                 INCIDENT_PAGE_SIZE,

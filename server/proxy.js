@@ -6,6 +6,7 @@ const { debug } = require("../src/util");
 const { UptimeKumaServer } = require("./uptime-kuma-server");
 const { CookieJar } = require("tough-cookie");
 const { createCookieAgent } = require("http-cookie-agent/http");
+const { findOneForTenant, dispenseForTenant, execForTenant, resolveTenantId } = require("./repository/tenant-repo");
 
 class Proxy {
     static SUPPORTED_PROXY_PROTOCOLS = ["http", "https", "socks", "socks5", "socks5h", "socks4"];
@@ -15,19 +16,23 @@ class Proxy {
      * @param {object} proxy Proxy to store
      * @param {number} proxyID ID of proxy to update
      * @param {number} userID ID of user the proxy belongs to
+     * @param {number|null} tenantId Active tenant of the caller (G4.19). When
+     * omitted, falls back to the seeded default tenant so legacy in-process
+     * callers keep working (logged, never silent).
      * @returns {Promise<Bean>} Updated proxy
      */
-    static async save(proxy, proxyID, userID) {
+    static async save(proxy, proxyID, userID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Proxy.save");
         let bean;
 
         if (proxyID) {
-            bean = await R.findOne("proxy", " id = ? AND user_id = ? ", [proxyID, userID]);
+            bean = await findOneForTenant("proxy", " id = ? AND user_id = ? ", [proxyID, userID], scopedTenantId);
 
             if (!bean) {
                 throw new Error("proxy not found");
             }
         } else {
-            bean = R.dispense("proxy");
+            bean = dispenseForTenant("proxy", scopedTenantId);
         }
 
         // Make sure given proxy protocol is supported
@@ -37,9 +42,12 @@ class Proxy {
                 Supported protocols are ${this.SUPPORTED_PROXY_PROTOCOLS.join(", ")}."`);
         }
 
-        // When proxy is default update deactivate old default proxy
+        // When proxy is default update deactivate old default proxy. Multi-row
+        // by design: exactly one default proxy per tenant at a time.
         if (proxy.default) {
-            await R.exec("UPDATE proxy SET `default` = 0 WHERE `default` = 1");
+            await execForTenant("UPDATE proxy SET `default` = 0 WHERE `default` = 1", [], scopedTenantId, {
+                requireId: false,
+            });
         }
 
         bean.user_id = userID;
@@ -55,7 +63,7 @@ class Proxy {
         await R.store(bean);
 
         if (proxy.applyExisting) {
-            await applyProxyEveryMonitor(bean.id, userID);
+            await applyProxyEveryMonitor(bean.id, userID, scopedTenantId);
         }
 
         return bean;
@@ -65,17 +73,22 @@ class Proxy {
      * Deletes proxy with given id and removes it from monitors
      * @param {number} proxyID ID of proxy to delete
      * @param {number} userID ID of proxy owner
+     * @param {number|null} tenantId Active tenant of the caller (G4.19); see save()
      * @returns {Promise<void>}
      */
-    static async delete(proxyID, userID) {
-        const bean = await R.findOne("proxy", " id = ? AND user_id = ? ", [proxyID, userID]);
+    static async delete(proxyID, userID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Proxy.delete");
+        const bean = await findOneForTenant("proxy", " id = ? AND user_id = ? ", [proxyID, userID], scopedTenantId);
 
         if (!bean) {
             throw new Error("proxy not found");
         }
 
-        // Delete removed proxy from monitors if exists
-        await R.exec("UPDATE monitor SET proxy_id = null WHERE proxy_id = ?", [proxyID]);
+        // Delete removed proxy from monitors if exists. Multi-row by design:
+        // every monitor referencing this proxy is unlinked, tenant-scoped.
+        await execForTenant("UPDATE monitor SET proxy_id = null WHERE proxy_id = ?", [proxyID], scopedTenantId, {
+            requireId: false,
+        });
 
         // Delete proxy from list
         await R.trash(bean);
@@ -180,16 +193,22 @@ class Proxy {
  * Applies given proxy id to monitors
  * @param {number} proxyID ID of proxy to apply
  * @param {number} userID ID of proxy owner
+ * @param {number} tenantId Active tenant of the caller (G4.19); only the
+ * tenant's monitors are touched
  * @returns {Promise<void>}
  */
-async function applyProxyEveryMonitor(proxyID, userID) {
-    // Find all monitors with id and proxy id
-    const monitors = await R.getAll("SELECT id, proxy_id FROM monitor WHERE user_id = ?", [userID]);
+async function applyProxyEveryMonitor(proxyID, userID, tenantId) {
+    // Find all monitors with id and proxy id (tenant-scoped: a user may hold
+    // monitors in more than one tenant; applyExisting applies per active tenant)
+    const monitors = await R.getAll("SELECT id, proxy_id FROM monitor WHERE user_id = ? AND tenant_id = ?", [
+        userID,
+        tenantId,
+    ]);
 
     // Update proxy id not match with given proxy id
     for (const monitor of monitors) {
         if (monitor.proxy_id !== proxyID) {
-            await R.exec("UPDATE monitor SET proxy_id = ? WHERE id = ?", [proxyID, monitor.id]);
+            await execForTenant("UPDATE monitor SET proxy_id = ? WHERE id = ?", [proxyID, monitor.id], tenantId);
         }
     }
 }

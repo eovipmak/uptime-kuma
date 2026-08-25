@@ -13,8 +13,10 @@
  *  2. same-tenant monitors ARE returned and user_id still applies,
  *  3. legacy NULL-tenant rows are excluded from a tenant-scoped query
  *     (strict equality, matching Monitor.listForTenantAndUser),
- *  4. calling without a tenantID keeps the legacy behavior (no tenant
- *     filtering), so non-socket callers stay unaffected.
+ *  4. G4.19 (KUM-35): the signature is now (tenantID, userID) per kanban
+ *     task-19 — the wrapper injects the tenant filter, so calling without a
+ *     tenant context fails closed (rejects), and legacy in-process callers
+ *     opt into the documented default-tenant fallback via resolveTenantId().
  */
 const { describe, test } = require("node:test");
 const assert = require("node:assert");
@@ -133,7 +135,7 @@ describe("getMonitorJSONList tenant filter", () => {
     });
 
     test("monitors from another tenant are NOT returned for the active tenant", async () => {
-        const list = await getMonitorJSONList.call({}, USER_1, defaultTenantID);
+        const list = await getMonitorJSONList.call({}, defaultTenantID, USER_1);
         const names = Object.values(list).map((m) => m.name);
 
         assert.ok(!names.includes("acme-x"), "tenant B monitor must not leak into default tenant list");
@@ -141,14 +143,14 @@ describe("getMonitorJSONList tenant filter", () => {
     });
 
     test("same-tenant monitors ARE returned and user_id still applies", async () => {
-        const listUser1 = await getMonitorJSONList.call({}, USER_1, defaultTenantID);
+        const listUser1 = await getMonitorJSONList.call({}, defaultTenantID, USER_1);
         assert.deepStrictEqual(
             Object.values(listUser1).map((m) => m.name),
             [ "default-a" ],
             "user 1 sees exactly their own default-tenant monitor"
         );
 
-        const listUser2 = await getMonitorJSONList.call({}, USER_2, defaultTenantID);
+        const listUser2 = await getMonitorJSONList.call({}, defaultTenantID, USER_2);
         assert.deepStrictEqual(
             Object.values(listUser2).map((m) => m.name),
             [ "default-b" ],
@@ -157,22 +159,31 @@ describe("getMonitorJSONList tenant filter", () => {
     });
 
     test("legacy NULL-tenant rows are excluded from a tenant-scoped query", async () => {
-        const list = await getMonitorJSONList.call({}, USER_1, TENANT_B_ID);
+        const list = await getMonitorJSONList.call({}, TENANT_B_ID, USER_1);
         const names = Object.values(list).map((m) => m.name);
 
         assert.ok(!names.includes("legacy-null"), "strict tenant equality excludes NULL-tenant rows");
         assert.ok(names.includes("acme-x"), "owning tenant still sees its own monitor");
     });
 
-    test("calling without tenantID keeps legacy unfiltered-by-tenant behavior", async () => {
-        const list = await getMonitorJSONList.call({}, USER_1);
-        const names = Object.values(list).map((m) => m.name).sort();
-
-        assert.deepStrictEqual(
-            names,
-            [ "acme-x", "default-a", "legacy-null" ],
-            "no tenant arg returns every monitor owned by the user across tenants"
+    test("calling without a tenant context fails closed (G4.19)", async () => {
+        // The wrapper never silently skips the tenant filter: an omitted
+        // tenantID must reject instead of returning cross-tenant rows.
+        await assert.rejects(
+            () => getMonitorJSONList.call({}, undefined, USER_1),
+            /tenantId required/,
+            "missing tenant context must fail loudly"
         );
+    });
+
+    test("legacy callers resolve the default tenant via resolveTenantId (documented fallback)", async () => {
+        const { resolveTenantId } = require("../../server/repository/tenant-repo");
+        const resolved = await resolveTenantId(null, "getMonitorJSONList legacy caller");
+
+        assert.strictEqual(resolved, defaultTenantID, "omitted tenantId resolves to the seeded default tenant");
+
+        const names = Object.values(await getMonitorJSONList.call({}, resolved, USER_1)).map((m) => m.name);
+        assert.deepStrictEqual(names, [ "default-a" ], "resolved default tenant scopes the list like an explicit id");
     });
 
     test("teardown: close database and remove temp file", async () => {

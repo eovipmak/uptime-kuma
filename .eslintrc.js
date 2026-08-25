@@ -104,6 +104,24 @@ module.exports = {
         "uptime-kuma/require-tenant-scope": "warn",
     },
     overrides: [
+        // G4.19 (KUM-35): these files are fully migrated to the tenant-safe
+        // repository wrappers, so unscoped R.findOne/R.find/R.findAll/R.exec
+        // becomes an error. Exemptions are inline eslint-disables with a
+        // documented rationale (FK-anchored child tables, global user/setting,
+        // public status-page reads).
+        {
+            files: [
+                "server/model/**/*.js",
+                "server/uptime-kuma-server.js",
+                "server/notification.js",
+                "server/docker.js",
+                "server/proxy.js",
+                "server/remote-browser.js",
+            ],
+            rules: {
+                "uptime-kuma/require-tenant-scope": "error",
+            },
+        },
         // Override for TypeScript
         {
             files: ["**/*.ts"],

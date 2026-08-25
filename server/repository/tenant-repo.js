@@ -11,9 +11,18 @@
  * Frozen exports consumed by task-18/19/20 and later phases:
  * - findOneForTenant / findForTenant / findAllForTenant / execForTenant / dispenseForTenant
  * - TenantScopedQueryBuilder
+ *
+ * G4.19 additionally ships resolveTenantId(): the documented default-tenant
+ * fallback for legacy in-process callers that predate tenant threading. It is
+ * deliberately loud (log.warn) so silent fallbacks are visible in the logs.
  */
 const { R } = require("redbean-node");
 const { log } = require("../../src/util");
+
+// Keep in sync with DEFAULT_TENANT_SLUG in server/middleware/resolve-tenant.js.
+// Duplicated as a literal instead of imported so the data layer does not pull
+// in the middleware import graph (jwt/settings/database).
+const DEFAULT_TENANT_SLUG = "default";
 
 /**
  * Validate the tenant context. The wrapper never silently defaults to the
@@ -50,6 +59,34 @@ function assertWhereFragment(whereFragment, op) {
             `${op}: whereFragment must not reference tenant_id directly; the wrapper injects the tenant filter automatically`
         );
     }
+}
+
+/**
+ * Resolve the tenant context for a legacy in-process caller (G4.19).
+ *
+ * The wrapper itself never defaults silently; this helper exists so model
+ * static methods can keep their pre-tenant signatures working on single-tenant
+ * installs: an omitted tenantId resolves to the seeded default tenant and the
+ * fallback is announced via log.warn (never silent). When the default tenant
+ * is missing, it fails loudly like the rest of the wrapper.
+ * @param {any} tenantId caller-supplied tenant context; numbers pass through untouched
+ * @param {string} op caller description used in log/error messages
+ * @returns {Promise<number>} a finite tenant id (supplied or resolved default)
+ * @throws {Error} when tenantId is invalid AND the default tenant cannot be resolved
+ */
+async function resolveTenantId(tenantId, op) {
+    if (typeof tenantId === "number" && Number.isFinite(tenantId)) {
+        return tenantId;
+    }
+    // eslint-disable-next-line uptime-kuma/require-tenant-scope -- the tenant registry itself is global by definition
+    const tenant = await R.findOne("tenant", " slug = ? ", [ DEFAULT_TENANT_SLUG ]);
+    if (!tenant) {
+        const msg = `${op}: no tenantId given and the default tenant "${DEFAULT_TENANT_SLUG}" does not exist`;
+        log.warn("tenant-repo", msg);
+        throw new Error(msg);
+    }
+    log.warn("tenant-repo", `${op}: missing tenantId, falling back to default tenant ${tenant.id} (legacy single-tenant path)`);
+    return tenant.id;
 }
 
 /**
@@ -302,4 +339,5 @@ module.exports = {
     execForTenant,
     dispenseForTenant,
     TenantScopedQueryBuilder,
+    resolveTenantId,
 };
