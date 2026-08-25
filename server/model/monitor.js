@@ -46,7 +46,7 @@ const { R } = require("redbean-node");
 const { BeanModel } = require("redbean-node/dist/bean-model");
 // G2 task-11: tenant-partitioned room keys for live emits
 const { userRoom } = require("../socket-handlers/tenant-room");
-const { TenantUser } = require("./tenant_user");
+const TenantUser = require("./tenant_user");
 const { Notification } = require("../notification");
 const { Proxy } = require("../proxy");
 const { demoMode } = require("../config");

@@ -20,7 +20,7 @@ const { UptimeCalculator } = require("../uptime-calculator");
 const { Settings } = require("../settings");
 // G2 task-11: push flow emits to the monitor's tenant-scoped user room
 const { userRoom } = require("../socket-handlers/tenant-room");
-const { TenantUser } = require("../model/tenant_user");
+const TenantUser = require("../model/tenant_user");
 const User = require("../model/user");
 const TranslatableError = require("../translatable-error");
 const { bearerAuth, extractRequestHostname, findTenantByIdOrSlug, getMembershipRole } = require("../middleware");
