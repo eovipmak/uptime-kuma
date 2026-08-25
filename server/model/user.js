@@ -13,6 +13,7 @@ class User extends BeanModel {
      * @returns {Promise<void>}
      */
     static async resetPassword(userID, newPassword) {
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global; tenancy enforced via tenant_user join (task-19 exemption contract)
         await R.exec("UPDATE `user` SET password = ? WHERE id = ? ", [
             await passwordHash.generate(newPassword),
             userID,
@@ -27,6 +28,7 @@ class User extends BeanModel {
     async resetPassword(newPassword) {
         const hashedPassword = await passwordHash.generate(newPassword);
 
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- user is global; tenancy enforced via tenant_user join (task-19 exemption contract)
         await R.exec("UPDATE `user` SET password = ? WHERE id = ? ", [hashedPassword, this.id]);
 
         this.password = hashedPassword;

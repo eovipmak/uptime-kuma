@@ -173,6 +173,7 @@ class DomainExpiry extends BeanModel {
      * @returns {Promise<DomainExpiry>} Domain bean
      */
     static async findByName(domain) {
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- domain_expiry is a global domain-to-expiry cache keyed by domain name, shared across tenants by design (G1: no tenant_id column)
         return R.findOne("domain_expiry", "domain = ?", [domain]);
     }
 
@@ -181,6 +182,7 @@ class DomainExpiry extends BeanModel {
      * @returns {DomainExpiry} Domain bean
      */
     static createByName(domain) {
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- global cache row keyed by domain; shared across tenants by design (G1)
         const d = R.dispense("domain_expiry");
         d.domain = domain;
         return d;

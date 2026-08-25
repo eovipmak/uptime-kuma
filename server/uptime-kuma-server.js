@@ -21,6 +21,8 @@ const {
     startTenantMembershipCheckJob,
     stopTenantMembershipCheckJob,
 } = require("./jobs/check-tenant-membership");
+// G4.19: tenant-safe query wrappers (G4.17 contract)
+const { findForTenant, findAllForTenant, resolveTenantId } = require("./repository/tenant-repo");
 // DO NOT IMPORT HERE IF THE MODULES USED `UptimeKumaServer.getInstance()`, put at the bottom of this file instead.
 
 /**
@@ -45,6 +47,15 @@ class UptimeKumaServer {
      * @type {{}}
      */
     maintenanceList = {};
+
+    /**
+     * G4.19: tenant-partitioned maintenance map. Shape:
+     * maintenanceListByTenant[tenantId][maintenanceId] = bean. Filled by
+     * loadMaintenanceList(); consumed by getMaintenanceJSONList so emits never
+     * leak across tenants. The per-tenant tick loop itself is G5.
+     * @type {{[tenantId: number]: {[maintenanceId: number]: object}}}
+     */
+    maintenanceListByTenant = {};
 
     entryPage = "dashboard";
     app = undefined;
@@ -244,7 +255,7 @@ class UptimeKumaServer {
      * @returns {Promise<object>} List of monitors
      */
     async sendMonitorList(socket) {
-        let list = await this.getMonitorJSONList(socket.userID, socket.tenantID ?? null);
+        let list = await this.getMonitorJSONList(await resolveTenantId(socket.tenantID, "sendMonitorList"), socket.userID);
         this.io.to(userRoom(socket.tenantID, socket.userID)).emit("monitorList", list);
         return list;
     }
@@ -256,7 +267,11 @@ class UptimeKumaServer {
      * @returns {Promise<void>}
      */
     async sendUpdateMonitorIntoList(socket, monitorID) {
-        let list = await this.getMonitorJSONList(socket.userID, socket.tenantID ?? null, monitorID);
+        let list = await this.getMonitorJSONList(
+            await resolveTenantId(socket.tenantID, "sendUpdateMonitorIntoList"),
+            socket.userID,
+            monitorID
+        );
         if (list && list[monitorID]) {
             this.io.to(userRoom(socket.tenantID, socket.userID)).emit("updateMonitorIntoList", list);
         }
@@ -273,31 +288,28 @@ class UptimeKumaServer {
     }
 
     /**
-     * Get a list of monitors for the given user.
+     * Get a list of monitors for the given user (G4.19 contract signature:
+     * tenant first, per kanban task-19 acceptance criteria).
+     * @param {number} tenantID Active tenant scoping the list. Only monitors
+     * of that tenant are returned (strict equality, matching
+     * Monitor.listForTenantAndUser; NULL-tenant legacy rows are excluded by
+     * design). Resolve via resolveTenantId() when the caller predates tenant
+     * threading.
      * @param {string} userID - The ID of the user to get monitors for.
-     * @param {number|null} tenantID - Active tenant of the user (KUM-100).
-     * When set, only monitors of that tenant are returned (strict equality,
-     * matching Monitor.listForTenantAndUser and the other listForTenant
-     * helpers; NULL-tenant legacy rows are excluded by design). When null,
-     * no tenant filtering is applied (legacy behavior).
      * @param {number} monitorID - The ID of monitor for.
      * @returns {Promise<object>} A promise that resolves to an object with monitor IDs as keys and monitor objects as values.
      */
-    async getMonitorJSONList(userID, tenantID = null, monitorID = null) {
-        let query = " user_id = ? ";
-        let queryParams = [userID];
-
-        if (tenantID != null) {
-            query += "AND tenant_id = ? ";
-            queryParams.push(tenantID);
-        }
-
-        if (monitorID) {
-            query += "AND id = ? ";
-            queryParams.push(monitorID);
-        }
-
-        let monitorList = await R.find("monitor", query + "ORDER BY weight DESC, name", queryParams);
+    async getMonitorJSONList(tenantID, userID, monitorID = null) {
+        // Tenant filter is injected by the wrapper — never hand-written here.
+        const tenantScopedQuery = monitorID ? " id = ? AND user_id = ? " : " user_id = ? ";
+        const tenantScopedParams = monitorID ? [monitorID, userID] : [userID];
+        let monitorList = await findForTenant(
+            "monitor",
+            tenantScopedQuery,
+            tenantScopedParams,
+            tenantID,
+            "ORDER BY weight DESC, name"
+        );
 
         const monitorData = monitorList.map((monitor) => ({
             id: monitor.id,
@@ -317,7 +329,7 @@ class UptimeKumaServer {
      * @returns {Promise<object>} Maintenance list
      */
     async sendMaintenanceList(socket) {
-        return await this.sendMaintenanceListByUserID(socket.userID);
+        return await this.sendMaintenanceListByUserID(socket.userID, socket.tenantID);
     }
 
     /**
@@ -325,46 +337,65 @@ class UptimeKumaServer {
      * @param {number} userID User to send list to
      * @param {number|null} tenantID Active tenant of the user (G2 task-11).
      * When omitted, falls back to the user's primary tenant so legacy
-     * model-layer callers keep delivering until G5 owns dispatch.
+     * model-layer callers keep delivering until G5 owns dispatch. The emitted
+     * list contains only the resolved tenant's maintenances (G4.19).
      * @returns {Promise<object>} Maintenance list
      */
     async sendMaintenanceListByUserID(userID, tenantID = null) {
-        let list = await this.getMaintenanceJSONList(userID);
-
         const roomTenantID = (tenantID !== null && tenantID !== undefined) ? tenantID : await TenantUser.getPrimaryTenantID(userID);
         if (!roomTenantID) {
             log.warn("maintenance", `sendMaintenanceListByUserID: user ${userID} has no tenant membership; skipping emit`);
-            return list;
+            return {};
         }
+
+        let list = await this.getMaintenanceJSONList(roomTenantID);
 
         this.io.to(userRoom(roomTenantID, userID)).emit("maintenanceList", list);
         return list;
     }
 
     /**
-     * Get a list of maintenances for the given user.
-     * @param {string} userID - The ID of the user to get maintenances for.
+     * Get a list of maintenances for the given user's tenant.
+     * @param {number} tenantID Active tenant of the user (G4.19). Only the
+     * tenant-partitioned in-memory map is read, so a tenant never receives
+     * another tenant's maintenance entries.
      * @returns {Promise<object>} A promise that resolves to an object with maintenance IDs as keys and maintenances objects as values.
      */
-    async getMaintenanceJSONList(userID) {
+    async getMaintenanceJSONList(tenantID) {
         let result = {};
-        for (let maintenanceID in this.maintenanceList) {
-            result[maintenanceID] = await this.maintenanceList[maintenanceID].toJSON();
+        const tenantList = this.maintenanceListByTenant[tenantID] || {};
+        for (let maintenanceID in tenantList) {
+            result[maintenanceID] = await tenantList[maintenanceID].toJSON();
         }
         return result;
     }
 
     /**
-     * Load maintenance list and run
-     * @param {any} userID Unused
+     * Load the maintenance lists and run them (G4.19: partitioned by tenant).
+     *
+     * The heavy per-tenant scheduler rewrite is G5; here only the storage
+     * shape is the contract: `this.maintenanceListByTenant[tenantId]` holds
+     * that tenant's beans so emits never leak across tenants. The legacy flat
+     * `this.maintenanceList` map is still populated for engine consumers
+     * (`getMaintenance`, `maintenance.run`) until G5 replaces them.
+     * Enumerating DISTINCT tenant_id is meta-level partition discovery, not a
+     * row read, so it is exempt from the wrapper by design.
      * @returns {Promise<void>}
      */
-    async loadMaintenanceList(userID) {
-        let maintenanceList = await R.findAll("maintenance", " ORDER BY end_date DESC, title", []);
+    async loadMaintenanceList() {
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- R.getAll is out of the rule's scope anyway; DISTINCT tenant enumeration is partition discovery, not row access
+        const tenantRows = await R.getAll("SELECT DISTINCT tenant_id FROM maintenance WHERE tenant_id IS NOT NULL");
 
-        for (let maintenance of maintenanceList) {
-            this.maintenanceList[maintenance.id] = maintenance;
-            maintenance.run(this);
+        for (const row of tenantRows) {
+            const tenantId = row.tenant_id;
+            const maintenanceList = await findAllForTenant("maintenance", " 1=1 ", [], tenantId, "ORDER BY end_date DESC, title");
+
+            this.maintenanceListByTenant[tenantId] = {};
+            for (let maintenance of maintenanceList) {
+                this.maintenanceListByTenant[tenantId][maintenance.id] = maintenance;
+                this.maintenanceList[maintenance.id] = maintenance;
+                maintenance.run(this);
+            }
         }
     }
 
