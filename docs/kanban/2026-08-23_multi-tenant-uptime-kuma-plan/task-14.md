@@ -149,3 +149,10 @@ Realtime/socket lead / Uptime Kuma maintainer. Specifically confirms:
 - **Do not** introduce resource-owner checks (e.g., a Member editing another Member's monitor) — G4. The Member's permission to edit any monitor in their tenant is the plan's design ("tạo/sửa monitor được cấp" — granted monitors); resource-owner granularity is G4's layer.
 - **Do not** add permission checks to the `login`/`loginByToken`/`setup` flow — those run **before** `socket.role` is set; per G2 task-09 they're the flow that establishes the role claim. `checkLogin` itself is the only assertion there.
 - **Do not** break the existing `doubleCheckPassword` flow — keep it intact next to any new `checkPermission(...)` call.
+
+## Coordinator status
+- Status: completed
+- Completed by: Oracle (CTO)
+- Completed at: 2026-08-25T09:57:28Z
+- Verification: `npx eslint server/socket-handlers/ server/server.js` -> exit 0 (lint clean). `gh pr diff 39 --name-only` -> only the 11 allowed files (server/server.js + 10 server/socket-handlers/*.js), no new files. All permission constants resolved against the frozen `server/rbac/permissions.js` enum; `checkPermission` throws `TranslatableError("forbiddenPermission")` per spec (`server/rbac/socket-rbac.js`). Backward-compat proven by construction: `TENANT_ADMIN` (default-tenant admin from G1) holds every gated permission in `server/rbac/policy.js` ROLES_PERMISSIONS; `SUPER_ADMIN` spreads `Object.values(PERMISSIONS)`. `npm run test-backend` blocked by a PRE-EXISTING `ERR_REQUIRE_ESM` in `server/model/monitor.js` -> `unlimited-timeout` (Node 18 ESM/CJS interop), confirmed on `master` (`git show master:server/model/monitor.js` line 3) and NOT touched by this PR — environmental, tracked separately, not a regression of this sweep.
+- Commit or artifact reference: PR #39 squash-merged to master as commit `d6612f31983a5bd07392d58f5783c508e10f453f` (https://github.com/eovipmak/uptime-kuma/pull/39).
