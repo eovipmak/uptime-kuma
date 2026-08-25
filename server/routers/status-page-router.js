@@ -7,8 +7,15 @@ const { R } = require("redbean-node");
 const { badgeConstants } = require("../../src/util");
 const { makeBadge } = require("badge-maker");
 const { UptimeCalculator } = require("../uptime-calculator");
+const { resolveTenant } = require("../middleware");
 
 let router = express.Router();
+
+// G2.10 — Public status pages still resolve a tenant context (subdomain →
+// custom domain → default fallback) WITHOUT authentication; the context is
+// consumed by G6 to scope slug lookups. No requireTenantContext() here —
+// these routes are public by design (ADR-0003 §2.2).
+router.use(resolveTenant());
 
 let cache = apicache.middleware;
 const server = UptimeKumaServer.getInstance();

@@ -21,6 +21,9 @@ const { Settings } = require("../settings");
 // G2 task-11: push flow emits to the monitor's tenant-scoped user room
 const { userRoom } = require("../socket-handlers/tenant-room");
 const { TenantUser } = require("../model/tenant_user");
+const User = require("../model/user");
+const TranslatableError = require("../translatable-error");
+const { bearerAuth, extractRequestHostname, findTenantByIdOrSlug, getMembershipRole } = require("../middleware");
 
 let router = express.Router();
 
@@ -32,10 +35,7 @@ router.get("/api/entry-page", async (request, response) => {
     allowDevAllOrigin(response);
 
     let result = {};
-    let hostname = request.hostname;
-    if ((await Settings.get("trustProxy")) && request.headers["x-forwarded-host"]) {
-        hostname = request.headers["x-forwarded-host"];
-    }
+    let hostname = await extractRequestHostname(request);
 
     if (hostname in StatusPage.domainMappingList) {
         result.type = "statusPageMatchedDomain";
@@ -45,6 +45,59 @@ router.get("/api/entry-page", async (request, response) => {
         result.entryPage = server.entryPage;
     }
     response.json(result);
+});
+
+// G2.10 — Switch the active tenant of the caller's session and re-issue a JWT
+// with the new tenant claims (consumes the task-09 claim contract). This is
+// the HTTP convenience mirror; the canonical switch flow stays socket.io
+// loginByToken. Membership is verified via tenant_user before any token is
+// issued — a non-member gets TranslatableError("tenantAccessDenied").
+router.post("/api/switch-tenant", bearerAuth(), async (request, response) => {
+    try {
+        if (!request.user || !request.user.id) {
+            sendHttpError(response, "Unauthorized");
+            return;
+        }
+
+        const reference = request.body ? request.body.tenantId : null;
+        if (reference == null || reference === "") {
+            sendHttpError(response, "Tenant not found.");
+            return;
+        }
+
+        // Accept both the numeric id and the human slug form.
+        const tenant = await findTenantByIdOrSlug(reference);
+        if (!tenant) {
+            sendHttpError(response, "Tenant not found.");
+            return;
+        }
+
+        const role = await getMembershipRole(request.user.id, tenant.id);
+        if (role == null) {
+            throw new TranslatableError("tenantAccessDenied");
+        }
+
+        const userBean = await R.findOne("user", " id = ? ", [ request.user.id ]);
+        if (!userBean) {
+            sendHttpError(response, "Unauthorized");
+            return;
+        }
+
+        const token = User.createJWT(userBean, tenant.id, role, server.jwtSecret);
+        log.info("tenant", `User ${request.user.username} switched to tenant ${tenant.slug}`);
+        response.json({
+            ok: true,
+            token,
+            tenant: {
+                id: tenant.id,
+                slug: tenant.slug,
+                name: tenant.name,
+                role: role,
+            },
+        });
+    } catch (error) {
+        sendHttpError(response, error.message);
+    }
 });
 
 router.all("/api/push/:pushToken", async (request, response) => {

@@ -374,6 +374,49 @@ let needSetup = false;
 
     // API Router
     const apiRouter = require("./routers/api-router");
+
+    // G2.10 — Tenant context (ADR-0003 §2.2). bearerAuth() decodes
+    // `Authorization: Bearer <jwt>` into request.user FIRST, because
+    // resolveTenant() needs the authenticated principal to membership-check
+    // the X-Tenant-ID header (priority 3 of: subdomain → custom domain →
+    // header → JWT claim → default tenant). socket.io + checkLogin() remains
+    // the canonical auth path (the two stacks are independent).
+    const {
+        resolveTenant,
+        bearerAuth,
+        requireTenantContext,
+        isTenantGuardExemptPath,
+    } = require("./middleware");
+    app.use(bearerAuth());
+    app.use(resolveTenant());
+
+    // requireTenantContext() guards business API routes only. Non-/api paths
+    // (dashboard SPA, static assets) and anonymous endpoints (entry page,
+    // push tokens authenticate via the monitor's push_token, badges, public
+    // status pages) are exempt so existing public flows keep working.
+    app.use((request, response, next) => {
+        if (isTenantGuardExemptPath(request.originalUrl)) {
+            next();
+        } else {
+            requireTenantContext()(request, response, next);
+        }
+    });
+
+    // Translate middleware-layer TranslatableErrors (e.g.
+    // tenantContextRequired) into the standard JSON error body. Route
+    // handlers below manage their own errors and are unaffected.
+    app.use((error, request, response, next) => {
+        if (error && error.msgi18n === true) {
+            response.status(error.meta && error.meta.status ? error.meta.status : 400).json({
+                status: "fail",
+                msg: error.message,
+                msgi18n: true,
+            });
+            return;
+        }
+        next(error);
+    });
+
     app.use(apiRouter);
 
     // Status Page Router
