@@ -56,10 +56,10 @@ class Group extends BeanModel {
     /**
      * List all groups belonging to a tenant
      * @param {number} tenantId ID of the tenant
-     * @returns {Promise<Bean[]>} List of group beans ordered by id
+     * @returns {Promise<object[]>} List of group rows ordered by id
      */
     static async listForTenant(tenantId) {
-        return await R.findMany("group", " tenant_id = ? ORDER BY id ", [tenantId]);
+        return await R.getAll("SELECT * FROM `group` WHERE tenant_id = ? ORDER BY id", [tenantId]);
     }
 }
 
