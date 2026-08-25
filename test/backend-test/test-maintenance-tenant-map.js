@@ -16,11 +16,32 @@
  *  3. addMaintenance-style dual registration keeps both maps consistent,
  *  4. the legacy flat getMaintenance still resolves globally — engine
  *     consumers (model/monitor.js, model/status_page.js) rely on it until G5.
+ *
+ * Harness note (mirrors the documented choice in test-tenant-idor.js):
+ * uptime-kuma-server.js transitively requires server/model/monitor.js, which
+ * pulls the ESM-only `unlimited-timeout` package — unrequireable on Node < 22
+ * via plain require(). We intercept that single module id with a native-timer
+ * stub before the first require so the real UptimeKumaServer module loads on
+ * any supported Node. Nothing else is stubbed; all behavior under test is the
+ * production code path.
  */
-const { describe, test } = require("node:test");
+const { describe, test, after } = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
+const Module = require("module");
+
+const origModuleLoad = Module._load;
+Module._load = function (request, parent, isMain) {
+    if (request === "unlimited-timeout") {
+        // ESM-only upstream; equivalent CJS surface backed by native timers.
+        return {
+            setTimeout: (fn, ms) => setTimeout(fn, ms),
+            clearTimeout: (t) => clearTimeout(t),
+        };
+    }
+    return origModuleLoad.call(this, request, parent, isMain);
+};
 
 const { UptimeKumaServer } = require("../../server/uptime-kuma-server");
 
@@ -75,6 +96,21 @@ describe("tenant-scoped maintenance map", () => {
     /** @type {object} knex instance shared by the tests in this file */
     let db;
     const testDbPath = path.join(__dirname, "../../data", "test-maintenance-tenant-map.db");
+
+    after(async () => {
+        // Stop every Croner job loadMaintenanceList created, otherwise the
+        // timers keep the event loop alive and `node --test` never exits.
+        const server = UptimeKumaServer.getInstance();
+        for (const bean of Object.values(server.maintenanceList || {})) {
+            if (bean && typeof bean.stop === "function") {
+                bean.stop();
+            }
+        }
+        if (db) {
+            await db.destroy();
+        }
+        removeTestDbFile(testDbPath);
+    });
 
     const TENANT_B_ID = 202; // secondary "acme" tenant inserted below
     const USER_1 = 11;       // member of BOTH tenants (the leak scenario)
