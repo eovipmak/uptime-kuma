@@ -1168,6 +1168,7 @@
     "authNoTenants": "You do not belong to any tenant. Please contact your administrator.",
     "tenantAccessDenied": "You do not have access to this tenant.",
     "tenantContextRequired": "No tenant context was resolved for this request.",
+    "forceLogoutTenant": "Your access to this workspace was revoked, so you have been logged out.",
     "2faAlreadyEnabled": "2FA is already enabled.",
     "2faEnabled": "2FA Enabled.",
     "2faDisabled": "2FA Disabled.",
