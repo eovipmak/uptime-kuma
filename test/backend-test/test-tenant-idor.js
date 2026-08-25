@@ -78,9 +78,6 @@ const passwordHash = require("../../server/password-hash");
 /** Deterministic test JWT secret (production secret comes from settings). */
 const JWT_SECRET = "g4-task-20-idor-test-secret";
 
-/** Tracker reference carried by every leak-site skip reason. */
-const LEAK_TRACKER = "KUM-188";
-
 // Fixture ids (explicit so cross-tenant probes are predictable)
 const TENANT_DEFAULT = 1;
 const TENANT_ACME = 2;
@@ -421,6 +418,13 @@ before(async () => {
         { id: 140, title: "acme-window", description: "", user_id: uid["acme-admin"], active: true, strategy: "single", tenant_id: TENANT_ACME },
         { id: 340, title: "root-window", description: "", user_id: uid["root"], active: true, strategy: "single", tenant_id: TENANT_DEFAULT },
     ]);
+    // Tenant-partitioned maintenance map mirror (storage shape of
+    // UptimeKumaServer.loadMaintenanceList — the post-G4.21 handler input)
+    globalMaintenanceByTenant[ TENANT_ACME ] = {};
+    globalMaintenanceByTenant[ TENANT_DEFAULT ] = {};
+    for (const row of await db("maintenance").select()) {
+        globalMaintenanceByTenant[ row.tenant_id ][ row.id ] = row;
+    }
 
     // Proxies / docker hosts / remote browsers / api keys
     await db("proxy").insert([
@@ -784,13 +788,13 @@ function registerHandlers(socket) {
         }
     });
 
-    // Mirrors server.js deleteNotification — FAITHFUL to the production call
-    // shape including the missing tenantId argument (leak site, KUM-188).
+    // Mirrors server.js deleteNotification (G4.21: Notification.delete WITH
+    // socket.tenantID — KUM-188 fix, PR #51)
     socket.on("deleteNotification", async (notificationID, callback) => {
         try {
             checkLogin(socket);
             checkPermission(socket, PERMISSIONS.NOTIFICATION_DELETE);
-            await Notification.delete(notificationID, socket.userID);
+            await Notification.delete(notificationID, socket.userID, socket.tenantID);
             callback({ ok: true, msg: "successDeleted", msgi18n: true });
         } catch (e) {
             callback({ ok: false, msg: e.message });
@@ -834,21 +838,23 @@ function registerHandlers(socket) {
     });
 
     // === MAINTENANCE domain ===
-    // Mirrors maintenance-socket-handler get/pause shape: the GLOBAL map lookup
-    // guarded only by user_id (the tenant-partitioned map is G4.19's
-    // maintenanceListByTenant; getMaintenance reads the flat map — KUM-188).
-    /** Flat map mirror of UptimeKumaServer.maintenanceList (id -> row) */
-    socket.maintenanceMap = globalMaintenanceMap;
+    // Mirrors maintenance-socket-handler post-G4.21 (KUM-188 fix, PR #51):
+    // get reads the tenant-partitioned map + user_id (findOneForTenant shape);
+    // pause reads ONLY the tenant-partitioned map via
+    // UptimeKumaServer.getMaintenanceForTenant(id, socket.tenantID) — the
+    // legacy flat map is engine-only and no longer a handler input.
+    /** Tenant-partitioned map mirror of UptimeKumaServer.maintenanceListByTenant */
+    const maintenanceByTenant = globalMaintenanceByTenant;
 
     socket.on("getMaintenance", async (maintenanceID, callback) => {
         try {
             checkLogin(socket);
-            const row = socket.maintenanceMap.get(Number(maintenanceID));
-            if (row && row.user_id !== socket.userID) {
-                throw new Error("Permission denied.");
-            }
+            const row = (maintenanceByTenant[ socket.tenantID ] ?? {})[ Number(maintenanceID) ];
             if (!row) {
                 throw new Error("Maintenance not found");
+            }
+            if (row.user_id !== socket.userID) {
+                throw new Error("Permission denied.");
             }
             callback({ ok: true, maintenance: { id: row.id, title: row.title } });
         } catch (e) {
@@ -860,12 +866,10 @@ function registerHandlers(socket) {
         try {
             checkLogin(socket);
             checkPermission(socket, PERMISSIONS.MAINTENANCE_MANAGE);
-            const row = socket.maintenanceMap.get(Number(maintenanceID));
+            const row = (maintenanceByTenant[ socket.tenantID ] ?? {})[ Number(maintenanceID) ];
             if (!row) {
                 throw new Error("Maintenance not found");
             }
-            // Production relies on the caller already having the bean from the
-            // global list (no user_id re-check on pause — see KUM-188 note).
             row.active = false;
             await db("maintenance").where("id", row.id).update({ active: false });
             callback({ ok: true, msg: "successPaused", msgi18n: true });
@@ -875,18 +879,17 @@ function registerHandlers(socket) {
     });
 
     // === PROXY domain ===
-    // Mirrors proxySocketHandler save/delete: Proxy.save/Delete WITHOUT
-    // tenantId (leak site, KUM-188); Proxy class itself is behind the ESM
-    // chain, so the wrapper replicates its documented body minus the arg.
+    // Mirrors proxySocketHandler deleteProxy: Proxy.delete WITH tenantId
+    // (G4.21 KUM-188 fix, PR #51). Proxy class body replicated minus ESM deps.
     socket.on("deleteProxyMirror", async (proxyID, callback) => {
         try {
             checkLogin(socket);
             checkPermission(socket, PERMISSIONS.PROXY_MANAGE);
-            const bean = await findOneForTenant("proxy", " id = ? AND user_id = ? ", [ proxyID, socket.userID ], TENANT_DEFAULT);
+            const bean = await findOneForTenant("proxy", " id = ? AND user_id = ? ", [ proxyID, socket.userID ], socket.tenantID);
             if (!bean) {
                 throw new Error("proxy not found");
             }
-            await execForTenant("UPDATE monitor SET proxy_id = null WHERE proxy_id = ?", [ proxyID ], TENANT_DEFAULT, { requireId: false });
+            await execForTenant("UPDATE monitor SET proxy_id = null WHERE proxy_id = ?", [ proxyID ], socket.tenantID, { requireId: false });
             await R.trash(bean);
             callback({ ok: true, msg: "successDeleted", msgi18n: true });
         } catch (e) {
@@ -895,12 +898,12 @@ function registerHandlers(socket) {
     });
 
     // === DOCKER HOST domain ===
-    // Mirrors dockerSocketHandler: REAL DockerHost.delete WITHOUT tenantId.
+    // Mirrors dockerSocketHandler: DockerHost.delete WITH tenantId (G4.21).
     socket.on("deleteDockerHost", async (dockerHostID, callback) => {
         try {
             checkLogin(socket);
             checkPermission(socket, PERMISSIONS.DOCKER_HOST_MANAGE);
-            await DockerHost.delete(dockerHostID, socket.userID);
+            await DockerHost.delete(dockerHostID, socket.userID, socket.tenantID);
             callback({ ok: true, msg: "successDeleted", msgi18n: true });
         } catch (e) {
             callback({ ok: false, msg: e.message });
@@ -908,11 +911,11 @@ function registerHandlers(socket) {
     });
 
     // === REMOTE BROWSER domain ===
-    // Mirrors remoteBrowserSocketHandler: REAL RemoteBrowser.get WITHOUT tid.
+    // Mirrors remoteBrowserSocketHandler: RemoteBrowser.get/delete WITH tid.
     socket.on("getRemoteBrowser", async (remoteBrowserID, callback) => {
         try {
             checkLogin(socket);
-            const bean = await RemoteBrowser.get(remoteBrowserID, socket.userID);
+            const bean = await RemoteBrowser.get(remoteBrowserID, socket.userID, socket.tenantID);
             callback({ ok: true, remoteBrowser: { id: bean.id, name: bean.name, url: bean.url } });
         } catch (e) {
             callback({ ok: false, msg: e.message });
@@ -921,7 +924,7 @@ function registerHandlers(socket) {
     socket.on("deleteRemoteBrowser", async (remoteBrowserID, callback) => {
         try {
             checkLogin(socket);
-            await RemoteBrowser.delete(remoteBrowserID, socket.userID);
+            await RemoteBrowser.delete(remoteBrowserID, socket.userID, socket.tenantID);
             callback({ ok: true, msg: "successDeleted", msgi18n: true });
         } catch (e) {
             callback({ ok: false, msg: e.message });
@@ -958,11 +961,12 @@ function registerHandlers(socket) {
 }
 
 /**
- * Global flat maintenance map mirroring UptimeKumaServer.maintenanceList
- * (populated across ALL tenants at boot — that is the surface under test).
- * @type {Map<number, object>}
+ * Tenant-partitioned maintenance map mirroring
+ * UptimeKumaServer.maintenanceListByTenant (populated per tenant at boot —
+ * the post-G4.21 handler input surface).
+ * @type {Record<number, Record<number, object>>}
  */
-const globalMaintenanceMap = new Map();
+const globalMaintenanceByTenant = {};
 
 describe("G4.20 — monitor domain IDOR (cross-tenant matrix)", () => {
     test("acme member cannot getMonitor a tenant-B (xyz) monitor", async () => {
@@ -1090,14 +1094,14 @@ describe("G4.20 — notification domain IDOR", () => {
 
     // Leak site: production calls Notification.delete(id, userID) without
     // tenantId → resolveTenantId(null) default fallback. Strict contract:
-    test("SKIP-KUM-188: root active in acme must not delete their default-tenant notification", { skip: `leak site: Notification.delete lacks tenantId threading — ${LEAK_TRACKER}` }, async () => {
+    test("root active in acme must not delete their default-tenant notification", async () => {
         const s = await loginAs("root", TENANT_ACME);
         const ack = await emitAck(s.client, "deleteNotification", 310);
         assert.equal(ack.ok, false, "another tenant's row must not resolve from an acme session");
         s.client.disconnect();
     });
 
-    test("SKIP-KUM-188: acme admin must be able to delete their OWN acme notification", { skip: `regression: non-default tenants cannot manage own rows while the fallback resolves default — ${LEAK_TRACKER}` }, async () => {
+    test("acme admin must be able to delete their OWN acme notification", async () => {
         const s = await loginAs("acme-admin", TENANT_ACME);
         const ack = await emitAck(s.client, "deleteNotification", 110);
         assert.equal(ack.ok, true, "in-tenant self-service must work");
@@ -1170,7 +1174,7 @@ describe("G4.20 — maintenance domain IDOR", () => {
     });
 
     // Leak site: pause reads the GLOBAL map with no ownership re-check.
-    test("SKIP-KUM-188: root active in acme must not pause their default-tenant maintenance", { skip: `leak site: global maintenanceList map has no tenant guard — ${LEAK_TRACKER}` }, async () => {
+    test("root active in acme must not pause their default-tenant maintenance", async () => {
         const s = await loginAs("root", TENANT_ACME);
         const ack = await emitAck(s.client, "pauseMaintenance", 340);
         assert.equal(ack.ok, false, "a cross-tenant pause must not succeed");
@@ -1191,7 +1195,7 @@ describe("G4.20 — proxy domain IDOR", () => {
     });
 
     // Leak site: production deleteProxy omits tenantId (mirrored faithfully).
-    test("SKIP-KUM-188: root active in acme must not delete their default-tenant proxy", { skip: `leak site: Proxy.delete called without tenantId — ${LEAK_TRACKER}` }, async () => {
+    test("root active in acme must not delete their default-tenant proxy", async () => {
         const s = await loginAs("root", TENANT_ACME);
         const ack = await emitAck(s.client, "deleteProxyMirror", 350);
         assert.equal(ack.ok, false, "cross-tenant destruction must not succeed");
@@ -1212,7 +1216,7 @@ describe("G4.20 — docker_host domain IDOR", () => {
     });
 
     // Leak site: production calls DockerHost.delete(id, userID) without tid.
-    test("SKIP-KUM-188: root active in acme must not delete their default-tenant docker host", { skip: `leak site: DockerHost.delete called without tenantId — ${LEAK_TRACKER}` }, async () => {
+    test("root active in acme must not delete their default-tenant docker host", async () => {
         const s = await loginAs("root", TENANT_ACME);
         const ack = await emitAck(s.client, "deleteDockerHost", 360);
         assert.equal(ack.ok, false);
@@ -1231,7 +1235,7 @@ describe("G4.20 — remote_browser domain IDOR", () => {
     });
 
     // Leak site: production calls RemoteBrowser.get/delete without tid.
-    test("SKIP-KUM-188: root active in acme must not reach their default-tenant remote browser", { skip: `leak site: RemoteBrowser.get/delete called without tenantId — ${LEAK_TRACKER}` }, async () => {
+    test("root active in acme must not reach their default-tenant remote browser", async () => {
         const s = await loginAs("root", TENANT_ACME);
         const got = await emitAck(s.client, "getRemoteBrowser", 370);
         assert.equal(got.ok, false);
