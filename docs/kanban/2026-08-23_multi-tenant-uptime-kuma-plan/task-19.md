@@ -1,7 +1,7 @@
 # Task G4.19 — Model + UptimeKumaServer Static/Instance Method Rewrite to Tenant-Safe Queries
 
 **Phase:** G4 — Repository / Query Layer
-**Status:** todo
+**Status:** completed
 **Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Backend lead / Uptime Kuma maintainer
 
@@ -144,3 +144,10 @@ Backend lead / Uptime Kuma maintainer. Specifically confirms:
 - **Do not** touch the public status page anonymous-read path — G6 owns the hostname-based tenant resolution for anonymous status pages.
 - **Do not** add audit-log writes — G9.
 - **Do not** change the cache-key handshake — the cache key namespace was frozen by `task-17`; this task doesn't apply it (Redis adapter is G10; manual key string changes wherever a model hand-writes a cache key are `task-20`'s bookkeeping).
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-25T13:40:00Z
+- Verification: PR #47 review — model + UptimeKumaServer methods migrated per task-19 checklist (a)-(f). Verified: Monitor.getPreviousHeartbeat/sendCertInfo/sendDomainInfo via findOneForTenant guard; deleteMonitor/deleteMonitorRecursively/unlinkAllChildren gain tenantId via execForTenant; child-table lookups use monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?) pattern with eslint-disable rationale; UptimeKumaServer.getMonitorJSONList signature is (tenantId, userID, monitorID); maintenance list partitioned (maintenanceListByTenant/finding per-tenant via findForTenant); user.js/setting global exemptions documented inline. Default-tenant backward-compat: backend suite baseline unchanged. Lint 0 errors. KUM-35 merged squash as 1fb43290 (PR #47).
+- Commit or artifact reference: branch feat/g4-19-model-tenant-queries, PR #47, master merge 1fb43290. CI SUCCESS (Lint, tsc, build Node 20) pre-merge.

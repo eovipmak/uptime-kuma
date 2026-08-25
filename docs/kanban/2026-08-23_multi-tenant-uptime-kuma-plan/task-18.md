@@ -1,7 +1,7 @@
 # Task G4.18 — Socket-Handler Call-Site Rewrite to Tenant-Safe Queries
 
 **Phase:** G4 — Repository / Query Layer
-**Status:** todo
+**Status:** completed
 **Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Realtime/socket lead / Uptime Kuma maintainer
 
@@ -123,3 +123,10 @@ Realtime/socket lead / Uptime Kuma maintainer. Specifically confirms:
 - **Do not** migrate `server/settings.js` (`Settings.get/set`) — global settings are cross-tenant system config (the `setting` table has no `tenant_id`; G1 intentionally didn't add one). Document the exemption inline per file.
 - **Do not** change the migrations or the seed — G1 owns database state.
 - **Do not** alter the RBAC layer or `socket.tenantID` setting — those are frozen by G3 and G2.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-25T13:40:00Z
+- Verification: PR #48 review — socket-handler call sites migrated to tenant-safe wrapper per task-18 checklist (a)-(f). Verified: every R.* in server/socket-handlers/*.js, server/client.js, inline server/server.js socket block either migrated to findOneForTenant/findForTenant/execForTenant/dispenseForTenant with socket.tenantID or exempted with inline eslint-disable rationale (setting/statusPage public). Six lifecycle sites thread socket.tenantID (addMonitor->startMonitor, editMonitor->restartMonitor, resumeMonitor->startMonitor, checkOwner->findOneForTenant). ESLint overrides elevated to error for migrated files. Default-tenant backward-compat: existing backend suite baseline unchanged. Lint 0 errors on migrated files. KUM-34 merged squash as 3b6880b7 (PR #48) + follow-up KUM-178 tenant thread-through fix.
+- Commit or artifact reference: branch feat/g4-18-socket-tenant-queries, PR #48, master merge 3b6880b7. CI SUCCESS (Lint, tsc, build Node 20) pre-merge.
