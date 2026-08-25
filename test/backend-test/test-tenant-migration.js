@@ -107,13 +107,22 @@ async function migrateLatest(db) {
 }
 
 /**
+ * File name of the seed/backfill migration this suite rolls back.
+ * Targeted BY NAME, not by position: migrate.down() without a name unwinds
+ * whichever migration sorts last, which silently breaks whenever another
+ * migration is appended to db/knex_migrations (e.g. KUM-75's type repair).
+ * @type {string}
+ */
+const SEED_MIGRATION_NAME = "2026-08-23-0002-seed-default-tenant.js";
+
+/**
  * Roll back exactly ONE migration: 2026-08-23-0002-seed-default-tenant.js.
  *
  * knex's migrate.rollback() unwinds the WHOLE last batch, and a single
  * migrate.latest() applies everything as one batch - rolling it back would
  * also revert pre-G1 migrations owned by earlier releases. migrate.down()
- * (without name) reverts exactly one migration, and 2026-08-23-0002 sorts
- * last, so one targeted down unwinds precisely the seeding/backfill step.
+ * with an explicit `name` reverts exactly that migration regardless of how
+ * many later migrations exist.
  *
  * This is the rollback the data-safety claim is about: it detaches business
  * rows (tenant_id -> NULL) while the column itself (added by 0001) still
@@ -124,6 +133,7 @@ async function migrateLatest(db) {
 async function rollbackSeedMigration(db) {
     await db.migrate.down({
         directory: MIGRATION_DIRECTORY,
+        name: SEED_MIGRATION_NAME,
     });
 }
 
