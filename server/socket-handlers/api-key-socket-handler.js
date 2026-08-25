@@ -2,7 +2,8 @@ const { checkLogin } = require("../util-server");
 const { checkPermission } = require("../rbac/socket-rbac");
 const { PERMISSIONS } = require("../rbac/permissions");
 const { log } = require("../../src/util");
-const { R } = require("redbean-node");
+// G4.18 (KUM-34): tenant-safe query wrappers
+const { execForTenant } = require("../repository");
 const { nanoid } = require("nanoid");
 const passwordHash = require("../password-hash");
 const apicache = require("../modules/apicache");
@@ -26,7 +27,9 @@ module.exports.apiKeySocketHandler = (socket) => {
             let clearKey = nanoid(40);
             let hashedKey = await passwordHash.generate(clearKey);
             key["key"] = hashedKey;
-            let bean = await APIKey.save(key, socket.userID);
+            // G4.18 (task-18 item 3): tenantId threaded through the call site;
+            // APIKey.save() persisting it lands with task-19's model migration.
+            let bean = await APIKey.save(key, socket.userID, socket.tenantID);
 
             log.debug("apikeys", "Added API Key");
             log.debug("apikeys", key);
@@ -83,7 +86,11 @@ module.exports.apiKeySocketHandler = (socket) => {
 
             log.debug("apikeys", `Deleted API Key: ${keyID} User ID: ${socket.userID}`);
 
-            await R.exec("DELETE FROM api_key WHERE id = ? AND user_id = ? ", [keyID, socket.userID]);
+            // G4.18: tenant+user scoped delete
+            await execForTenant("DELETE FROM api_key WHERE id = ? AND user_id = ? ", [
+                keyID,
+                socket.userID,
+            ], socket.tenantID);
 
             apicache.clear();
 
@@ -110,7 +117,8 @@ module.exports.apiKeySocketHandler = (socket) => {
 
             log.debug("apikeys", `Disabled Key: ${keyID} User ID: ${socket.userID}`);
 
-            await R.exec("UPDATE api_key SET active = 0 WHERE id = ? ", [keyID]);
+            // G4.18: tenant-scoped toggle (was unscoped — any tenant's key id worked)
+            await execForTenant("UPDATE api_key SET active = 0 WHERE id = ? ", [keyID], socket.tenantID);
 
             apicache.clear();
 
@@ -137,7 +145,8 @@ module.exports.apiKeySocketHandler = (socket) => {
 
             log.debug("apikeys", `Enabled Key: ${keyID} User ID: ${socket.userID}`);
 
-            await R.exec("UPDATE api_key SET active = 1 WHERE id = ? ", [keyID]);
+            // G4.18: tenant-scoped toggle (was unscoped — any tenant's key id worked)
+            await execForTenant("UPDATE api_key SET active = 1 WHERE id = ? ", [keyID], socket.tenantID);
 
             apicache.clear();
 

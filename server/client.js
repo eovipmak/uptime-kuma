@@ -3,6 +3,8 @@
  */
 const { TimeLogger } = require("../src/util");
 const { R } = require("redbean-node");
+// G4.18 (KUM-34): tenant-safe query wrappers for every list emit
+const { findForTenant } = require("./repository");
 const { UptimeKumaServer } = require("./uptime-kuma-server");
 const server = UptimeKumaServer.getInstance();
 const io = server.io;
@@ -21,7 +23,8 @@ async function sendNotificationList(socket) {
     const timeLogger = new TimeLogger();
 
     let result = [];
-    let list = await R.find("notification", " user_id = ? ", [socket.userID]);
+    // G4.18: tenant-scoped so a switched-tenant user only sees their tenant's providers
+    let list = await findForTenant("notification", " user_id = ? ", [socket.userID], socket.tenantID);
 
     for (let bean of list) {
         let notificationObject = bean.export();
@@ -46,14 +49,17 @@ async function sendNotificationList(socket) {
  * @returns {Promise<void>}
  */
 async function sendHeartbeatList(socket, monitorID, toUser = false, overwrite = false) {
+    // G4.18: heartbeat is parent-anchored (ADR-0002 — no tenant_id column);
+    // the IN-subquery pins rows to the caller's tenant
     let list = await R.getAll(
         `
         SELECT * FROM heartbeat
         WHERE monitor_id = ?
+          AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)
         ORDER BY time DESC
         LIMIT 100
     `,
-        [monitorID]
+        [monitorID, socket.tenantID]
     );
 
     let result = list.reverse();
@@ -76,15 +82,17 @@ async function sendHeartbeatList(socket, monitorID, toUser = false, overwrite = 
 async function sendImportantHeartbeatList(socket, monitorID, toUser = false, overwrite = false) {
     const timeLogger = new TimeLogger();
 
+    // G4.18: parent-anchored heartbeat rows pinned to the caller's tenant (ADR-0002)
     let list = await R.find(
         "heartbeat",
         `
         monitor_id = ?
+        AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)
         AND important = 1
         ORDER BY time DESC
         LIMIT 500
     `,
-        [monitorID]
+        [monitorID, socket.tenantID]
     );
 
     timeLogger.print(`[Monitor: ${monitorID}] sendImportantHeartbeatList`);
@@ -106,7 +114,8 @@ async function sendImportantHeartbeatList(socket, monitorID, toUser = false, ove
 async function sendProxyList(socket) {
     const timeLogger = new TimeLogger();
 
-    const list = await R.find("proxy", " user_id = ? ", [socket.userID]);
+    // G4.18: tenant-scoped list emits — a switched-tenant user receives only their tenant's rows
+    const list = await findForTenant("proxy", " user_id = ? ", [socket.userID], socket.tenantID);
     io.to(userRoom(socket.tenantID, socket.userID)).emit(
         "proxyList",
         list.map((bean) => bean.export())
@@ -126,7 +135,8 @@ async function sendAPIKeyList(socket) {
     const timeLogger = new TimeLogger();
 
     let result = [];
-    const list = await R.find("api_key", "user_id=?", [socket.userID]);
+    // G4.18: tenant-scoped list emit
+    const list = await findForTenant("api_key", "user_id=?", [socket.userID], socket.tenantID);
 
     for (let bean of list) {
         result.push(bean.toPublicJSON());
@@ -173,7 +183,8 @@ async function sendDockerHostList(socket) {
     const timeLogger = new TimeLogger();
 
     let result = [];
-    let list = await R.find("docker_host", " user_id = ? ", [socket.userID]);
+    // G4.18: tenant-scoped list emit
+    let list = await findForTenant("docker_host", " user_id = ? ", [socket.userID], socket.tenantID);
 
     for (let bean of list) {
         result.push(bean.toJSON());
@@ -195,7 +206,8 @@ async function sendRemoteBrowserList(socket) {
     const timeLogger = new TimeLogger();
 
     let result = [];
-    let list = await R.find("remote_browser", " user_id = ? ", [socket.userID]);
+    // G4.18: tenant-scoped list emit
+    let list = await findForTenant("remote_browser", " user_id = ? ", [socket.userID], socket.tenantID);
 
     for (let bean of list) {
         result.push(bean.toJSON());

@@ -3,6 +3,8 @@ const { checkLogin } = require("../util-server");
 // G3 task-14: RBAC enforcement (see per-event annotations below)
 const { checkPermission } = require("../rbac/socket-rbac");
 const { PERMISSIONS } = require("../rbac/permissions");
+// G4.18 (KUM-34): tenant-safe query wrappers
+const { findOneForTenant, execForTenant, dispenseForTenant } = require("../repository");
 const dayjs = require("dayjs");
 const { log } = require("../../src/util");
 const ImageDataURI = require("../image-data-uri");
@@ -28,6 +30,18 @@ function validateIncident(incident) {
 }
 
 /**
+ * Resolve a status-page slug to its row, restricted to the caller's tenant.
+ * Used by every authenticated mutation path so a slug from another tenant
+ * resolves to null instead of leaking the page (G4.18).
+ * @param {Socket} socket Socket.io instance (socket.tenantID must be set)
+ * @param {string} slug Status page slug
+ * @returns {Promise<object|null>} the tenant-scoped status page bean, or null
+ */
+async function getSlugForTenant(socket, slug) {
+    return await findOneForTenant("status_page", " slug = ? ", [slug], socket.tenantID);
+}
+
+/**
  * Socket handlers for status page
  * @param {Socket} socket Socket.io instance to add listeners on
  * @returns {void}
@@ -43,15 +57,21 @@ module.exports.statusPageSocketHandler = (socket) => {
             // no new permission invented).
             checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
-            let statusPageID = await StatusPage.slugToID(slug);
+            // G4.18: tenant-scoped slug resolution (replaces the global slugToID)
+            let statusPage = await getSlugForTenant(socket, slug);
 
-            if (!statusPageID) {
+            if (!statusPage) {
                 throw new Error("slug is not found");
             }
+
+            const statusPageID = statusPage.id;
 
             let incidentBean;
 
             if (incident.id) {
+                // G4.18 exemption: incident is parent-anchored (ADR-0002 — no
+                // tenant_id column); the parent status page was verified in-tenant above.
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- parent status_page verified in-tenant above
                 incidentBean = await R.findOne("incident", " id = ? AND status_page_id = ? ", [
                     incident.id,
                     statusPageID,
@@ -59,6 +79,7 @@ module.exports.statusPageSocketHandler = (socket) => {
             }
 
             if (incidentBean == null) {
+                // G4.18 exemption: junction-child inherits tenancy from the verified parent page
                 incidentBean = R.dispense("incident");
             }
 
@@ -96,9 +117,20 @@ module.exports.statusPageSocketHandler = (socket) => {
             // annotation; INCIDENT_MANAGE, member+).
             checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
-            let statusPageID = await StatusPage.slugToID(slug);
+            // G4.18: tenant-scoped slug resolution + IN-subquery pin on the
+            // parent-anchored incident rows (ADR-0002)
+            let statusPage = await getSlugForTenant(socket, slug);
 
-            await R.exec("UPDATE incident SET pin = 0 WHERE pin = 1 AND status_page_id = ? ", [statusPageID]);
+            if (!statusPage) {
+                throw new Error("slug is not found");
+            }
+
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident has no tenant_id column (ADR-0002); rows pinned via IN-subquery on status_page.tenant_id
+            await R.exec(
+                "UPDATE incident SET pin = 0 WHERE pin = 1 AND status_page_id = ? " +
+                "AND status_page_id IN (SELECT id FROM status_page WHERE tenant_id = ?) ",
+                [statusPage.id, socket.tenantID]
+            );
 
             callback({
                 ok: true,
@@ -116,6 +148,9 @@ module.exports.statusPageSocketHandler = (socket) => {
             // RBAC: read, viewer+ OK — deliberately no checkLogin/check here:
             // this read also serves public status-page contexts (isPublic
             // filtering happens inside StatusPage.getIncidentHistory).
+            // G4.18 exemption: public slug resolution is G6's concern (the
+            // tenant is resolved by hostname for anonymous viewers, task-18
+            // out-of-scope note); StatusPage.slugToID stays until then.
             let statusPageID = await StatusPage.slugToID(slug);
             if (!statusPageID) {
                 throw new Error("slug is not found");
@@ -142,8 +177,9 @@ module.exports.statusPageSocketHandler = (socket) => {
             // annotation; INCIDENT_MANAGE, member+).
             checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
-            let statusPageID = await StatusPage.slugToID(slug);
-            if (!statusPageID) {
+            // G4.18: tenant-scoped slug resolution (replaces the global slugToID)
+            let statusPage = await getSlugForTenant(socket, slug);
+            if (!statusPage) {
                 callback({
                     ok: false,
                     msg: "slug is not found",
@@ -151,7 +187,11 @@ module.exports.statusPageSocketHandler = (socket) => {
                 });
                 return;
             }
+            const statusPageID = statusPage.id;
 
+            // G4.18 exemption: incident is parent-anchored (ADR-0002 — no
+            // tenant_id column); the parent page was verified in-tenant above.
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- parent status_page verified in-tenant above
             let bean = await R.findOne("incident", " id = ? AND status_page_id = ? ", [incidentID, statusPageID]);
             if (!bean) {
                 callback({
@@ -208,8 +248,9 @@ module.exports.statusPageSocketHandler = (socket) => {
             // annotation; INCIDENT_MANAGE, member+).
             checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
-            let statusPageID = await StatusPage.slugToID(slug);
-            if (!statusPageID) {
+            // G4.18: tenant-scoped slug resolution (replaces the global slugToID)
+            let statusPage = await getSlugForTenant(socket, slug);
+            if (!statusPage) {
                 callback({
                     ok: false,
                     msg: "slug is not found",
@@ -217,7 +258,11 @@ module.exports.statusPageSocketHandler = (socket) => {
                 });
                 return;
             }
+            const statusPageID = statusPage.id;
 
+            // G4.18 exemption: incident is parent-anchored (ADR-0002 — no
+            // tenant_id column); the parent page was verified in-tenant above.
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- parent status_page verified in-tenant above
             let bean = await R.findOne("incident", " id = ? AND status_page_id = ? ", [incidentID, statusPageID]);
             if (!bean) {
                 callback({
@@ -251,8 +296,9 @@ module.exports.statusPageSocketHandler = (socket) => {
             // annotation; INCIDENT_MANAGE, member+).
             checkPermission(socket, PERMISSIONS.INCIDENT_MANAGE);
 
-            let statusPageID = await StatusPage.slugToID(slug);
-            if (!statusPageID) {
+            // G4.18: tenant-scoped slug resolution (replaces the global slugToID)
+            let statusPage = await getSlugForTenant(socket, slug);
+            if (!statusPage) {
                 callback({
                     ok: false,
                     msg: "slug is not found",
@@ -260,7 +306,11 @@ module.exports.statusPageSocketHandler = (socket) => {
                 });
                 return;
             }
+            const statusPageID = statusPage.id;
 
+            // G4.18 exemption: incident is parent-anchored (ADR-0002 — no
+            // tenant_id column); the parent page was verified in-tenant above.
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- parent status_page verified in-tenant above
             let bean = await R.findOne("incident", " id = ? AND status_page_id = ? ", [incidentID, statusPageID]);
             if (!bean) {
                 callback({
@@ -297,7 +347,9 @@ module.exports.statusPageSocketHandler = (socket) => {
             // deliberate rather than default-open.
             checkPermission(socket, PERMISSIONS.STATUS_PAGE_READ);
 
-            let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
+            // G4.18: tenant-scoped editor read (the anonymous/public slug read
+            // path is G6's concern and lives elsewhere)
+            let statusPage = await getSlugForTenant(socket, slug);
 
             if (!statusPage) {
                 throw new Error("No slug?");
@@ -326,7 +378,8 @@ module.exports.statusPageSocketHandler = (socket) => {
             checkPermission(socket, PERMISSIONS.STATUS_PAGE_UPDATE);
 
             // Save Config
-            let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
+            // G4.18: tenant-scoped editor read — another tenant's slug is "No slug?"
+            let statusPage = await getSlugForTenant(socket, slug);
 
             if (!statusPage) {
                 throw new Error("No slug?");
@@ -389,12 +442,14 @@ module.exports.statusPageSocketHandler = (socket) => {
             for (let group of publicGroupList) {
                 let groupBean;
                 if (group.id) {
-                    groupBean = await R.findOne("group", " id = ? AND public = 1 AND status_page_id = ? ", [
+                    // G4.18: group is a tenant-owned Clause-B table
+                    groupBean = await findOneForTenant("group", " id = ? AND public = 1 AND status_page_id = ? ", [
                         group.id,
                         statusPage.id,
-                    ]);
+                    ], socket.tenantID);
                 } else {
-                    groupBean = R.dispense("group");
+                    // G4.18: born into the caller's tenant
+                    groupBean = dispenseForTenant("group", socket.tenantID);
                 }
 
                 groupBean.status_page_id = statusPage.id;
@@ -404,11 +459,20 @@ module.exports.statusPageSocketHandler = (socket) => {
 
                 await R.store(groupBean);
 
-                await R.exec("DELETE FROM monitor_group WHERE group_id = ? ", [groupBean.id]);
+                // G4.18: junction cleanup pinned to the caller's tenant's groups
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_group has no tenant_id column (ADR-0002); rows pinned via IN-subquery on group.tenant_id
+                await R.exec(
+                    "DELETE FROM monitor_group WHERE group_id = ? " +
+                    "AND group_id IN (SELECT id FROM `group` WHERE tenant_id = ?)", [
+                        groupBean.id,
+                        socket.tenantID,
+                    ]
+                );
 
                 let monitorOrder = 1;
 
                 for (let monitor of group.monitorList) {
+                    // G4.18 exemption: junction row inherits tenancy from the verified parent group
                     let relationBean = R.dispense("monitor_group");
                     relationBean.weight = monitorOrder++;
                     relationBean.group_id = groupBean.id;
@@ -432,12 +496,24 @@ module.exports.statusPageSocketHandler = (socket) => {
             // Delete groups that are not in the list
             log.debug("socket", "Delete groups that are not in the list");
             if (groupIDList.length === 0) {
-                await R.exec("DELETE FROM `group` WHERE status_page_id = ?", [statusPage.id]);
+                // G4.18: tenant-scoped bulk delete (multi-row by design — all
+                // groups of this page)
+                await execForTenant("DELETE FROM `group` WHERE status_page_id = ?", [statusPage.id], socket.tenantID, {
+                    requireId: false,
+                });
             } else {
                 const slots = groupIDList.map(() => "?").join(",");
 
                 const data = [...groupIDList, statusPage.id];
-                await R.exec(`DELETE FROM \`group\` WHERE id NOT IN (${slots}) AND status_page_id = ?`, data);
+                // G4.18: tenant-scoped bulk delete (see above)
+                await execForTenant(
+                    `DELETE FROM \`group\` WHERE id NOT IN (${slots}) AND status_page_id = ?`,
+                    data,
+                    socket.tenantID,
+                    {
+                        requireId: false,
+                    }
+                );
             }
 
             const server = UptimeKumaServer.getInstance();
@@ -490,7 +566,8 @@ module.exports.statusPageSocketHandler = (socket) => {
 
             checkSlug(slug);
 
-            let statusPage = R.dispense("status_page");
+            // G4.18: born into the caller's tenant
+            let statusPage = dispenseForTenant("status_page", socket.tenantID);
             statusPage.slug = slug;
             statusPage.title = title;
             statusPage.theme = "auto";
@@ -523,9 +600,12 @@ module.exports.statusPageSocketHandler = (socket) => {
             // the page itself) → STATUS_PAGE_DELETE (tenant_admin).
             checkPermission(socket, PERMISSIONS.STATUS_PAGE_DELETE);
 
-            let statusPageID = await StatusPage.slugToID(slug);
+            // G4.18: tenant-scoped slug resolution — a foreign tenant's page is
+            // "not found" here
+            let statusPage = await getSlugForTenant(socket, slug);
 
-            if (statusPageID) {
+            if (statusPage) {
+                const statusPageID = statusPage.id;
                 // Reset entry page if it is the default one.
                 if (server.entryPage === "statusPage-" + slug) {
                     server.entryPage = "dashboard";
@@ -536,13 +616,22 @@ module.exports.statusPageSocketHandler = (socket) => {
                 // But for incident & group, it is hard to add cascade foreign key during migration, so they have to be deleted manually.
 
                 // Delete incident
-                await R.exec("DELETE FROM incident WHERE status_page_id = ? ", [statusPageID]);
+                // G4.18: parent-anchored incident rows pinned to the caller's tenant
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident has no tenant_id column (ADR-0002); rows pinned via IN-subquery on status_page.tenant_id
+                await R.exec(
+                    "DELETE FROM incident WHERE status_page_id = ? " +
+                    "AND status_page_id IN (SELECT id FROM status_page WHERE tenant_id = ?) ",
+                    [statusPageID, socket.tenantID]
+                );
 
                 // Delete group
-                await R.exec("DELETE FROM `group` WHERE status_page_id = ? ", [statusPageID]);
+                // G4.18: tenant-scoped bulk delete (multi-row by design)
+                await execForTenant("DELETE FROM `group` WHERE status_page_id = ? ", [statusPageID], socket.tenantID, {
+                    requireId: false,
+                });
 
                 // Delete status_page
-                await R.exec("DELETE FROM status_page WHERE id = ? ", [statusPageID]);
+                await execForTenant("DELETE FROM status_page WHERE id = ? ", [statusPageID], socket.tenantID);
 
                 apicache.clear();
             } else {
