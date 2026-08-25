@@ -137,3 +137,10 @@ Backend lead / Uptime Kuma maintainer. Specifically confirms:
 - **Do not** modify the existing `basicAuth` authorizer signature for API keys — that path stays; switch-tenant is the parallel bearer (or socket-only) flow per step 4.
 - **Do not** add a separate refresh-token endpoint — the "refresh token" requirement is met by issuing a new access token on switch (per `task-09` step 4).
 - **Do not** expose `custom_domain` to clients via any new API here — that's G6's wizard.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-25T01:45:00Z
+- Verification: PR #27 reviewed and squash-merged (ac7da010). Gates at head: eslint clean, tsc exit 0, backend regression suite green; middleware contract covered by test-resolve-tenant-middleware.js (17 cases). resolveTenant/bearerAuth/requireTenantContext wired in server/server.js with exempt-path guard + TranslatableError handler; shared exports (findTenantByIdOrSlug, getMembershipRole, resolveTenantIdForInbound) consumed downstream by task-11 switchTenant.
+- Commit or artifact reference: master ac7da010 (PR #27); Paperclip KUM-26
