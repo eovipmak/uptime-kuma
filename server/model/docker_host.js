@@ -27,10 +27,10 @@ class DockerHost extends BeanModel {
     /**
      * List all docker hosts belonging to a tenant
      * @param {number} tenantId ID of the tenant
-     * @returns {Promise<Bean[]>} List of docker host beans ordered by id
+     * @returns {Promise<object[]>} List of docker host rows ordered by id
      */
     static async listForTenant(tenantId) {
-        return await R.findMany("docker_host", " tenant_id = ? ORDER BY id ", [tenantId]);
+        return await R.getAll("SELECT * FROM docker_host WHERE tenant_id = ? ORDER BY id", [tenantId]);
     }
 }
 

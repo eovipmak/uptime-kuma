@@ -33,10 +33,10 @@ class Proxy extends BeanModel {
     /**
      * List all proxies belonging to a tenant
      * @param {number} tenantId ID of the tenant
-     * @returns {Promise<Bean[]>} List of proxy beans ordered by id
+     * @returns {Promise<object[]>} List of proxy rows ordered by id
      */
     static async listForTenant(tenantId) {
-        return await R.findMany("proxy", " tenant_id = ? ORDER BY id ", [tenantId]);
+        return await R.getAll("SELECT * FROM proxy WHERE tenant_id = ? ORDER BY id", [tenantId]);
     }
 }
 

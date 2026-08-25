@@ -597,10 +597,10 @@ class StatusPage extends BeanModel {
     /**
      * List all status pages belonging to a tenant
      * @param {number} tenantId ID of the tenant
-     * @returns {Promise<Bean[]>} List of status page beans ordered by id
+     * @returns {Promise<object[]>} List of status page rows ordered by id
      */
     static async listForTenant(tenantId) {
-        return await R.findMany("status_page", " tenant_id = ? ORDER BY id ", [tenantId]);
+        return await R.getAll("SELECT * FROM status_page WHERE tenant_id = ? ORDER BY id", [tenantId]);
     }
 }
 

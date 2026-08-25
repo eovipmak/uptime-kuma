@@ -83,10 +83,10 @@ class APIKey extends BeanModel {
     /**
      * List all API keys belonging to a tenant
      * @param {number} tenantId ID of the tenant
-     * @returns {Promise<Bean[]>} List of API key beans ordered by id
+     * @returns {Promise<object[]>} List of API key rows ordered by id
      */
     static async listForTenant(tenantId) {
-        return await R.findMany("api_key", " tenant_id = ? ORDER BY id ", [tenantId]);
+        return await R.getAll("SELECT * FROM api_key WHERE tenant_id = ? ORDER BY id", [tenantId]);
     }
 }
 

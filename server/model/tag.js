@@ -25,10 +25,10 @@ class Tag extends BeanModel {
     /**
      * List all tags belonging to a tenant
      * @param {number} tenantId ID of the tenant
-     * @returns {Promise<Bean[]>} List of tag beans ordered by id
+     * @returns {Promise<object[]>} List of tag rows ordered by id
      */
     static async listForTenant(tenantId) {
-        return await R.findMany("tag", " tenant_id = ? ORDER BY id ", [tenantId]);
+        return await R.getAll("SELECT * FROM tag WHERE tenant_id = ? ORDER BY id", [tenantId]);
     }
 }
 

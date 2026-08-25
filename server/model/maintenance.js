@@ -513,10 +513,10 @@ class Maintenance extends BeanModel {
     /**
      * List all maintenance windows belonging to a tenant
      * @param {number} tenantId ID of the tenant
-     * @returns {Promise<Bean[]>} List of maintenance beans ordered by id
+     * @returns {Promise<object[]>} List of maintenance rows ordered by id
      */
     static async listForTenant(tenantId) {
-        return await R.findMany("maintenance", " tenant_id = ? ORDER BY id ", [tenantId]);
+        return await R.getAll("SELECT * FROM maintenance WHERE tenant_id = ? ORDER BY id", [tenantId]);
     }
 }
 

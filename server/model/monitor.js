@@ -2090,10 +2090,10 @@ class Monitor extends BeanModel {
     /**
      * List all monitors belonging to a tenant
      * @param {number} tenantId ID of the tenant
-     * @returns {Promise<Bean[]>} List of monitor beans ordered by id
+     * @returns {Promise<object[]>} List of monitor rows ordered by id
      */
     static async listForTenant(tenantId) {
-        return await R.findMany("monitor", " tenant_id = ? ORDER BY id ", [tenantId]);
+        return await R.getAll("SELECT * FROM monitor WHERE tenant_id = ? ORDER BY id", [tenantId]);
     }
 
     /**
@@ -2101,13 +2101,13 @@ class Monitor extends BeanModel {
      * legacy per-user ownership filtering on top of tenant scoping)
      * @param {number} tenantId ID of the tenant
      * @param {number} userId ID of the owning user
-     * @returns {Promise<Bean[]>} List of monitor beans ordered by id
+     * @returns {Promise<object[]>} List of monitor rows ordered by id
      */
     static async listForTenantAndUser(tenantId, userId) {
-        return await R.findMany("monitor", " tenant_id = ? AND user_id = ? ORDER BY id ", [
-            tenantId,
-            userId,
-        ]);
+        return await R.getAll(
+            "SELECT * FROM monitor WHERE tenant_id = ? AND user_id = ? ORDER BY id",
+            [ tenantId, userId ]
+        );
     }
 }
 
