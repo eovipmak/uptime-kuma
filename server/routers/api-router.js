@@ -30,6 +30,22 @@ let cache = apicache.middleware;
 const server = UptimeKumaServer.getInstance();
 let io = server.io;
 
+// G3 task-15 — HTTP router RBAC enforcement sweep.
+//
+// This fork's HTTP surface is intentionally read-only/public: every business
+// mutation lives on Socket.IO, which is gated by task-14's socket-side RBAC
+// helpers against the same task-13 matrix. Each route below therefore carries
+// an explicit disposition:
+//   - `// RBAC: public, no auth`      -> anonymous by design (G2 task-10
+//     TENANT_GUARD_EXEMPT_PREFIXES keep them outside requireTenantContext()).
+//   - `// RBAC: membership, not role` -> authenticated + membership-checked in
+//     the handler; no role gate (task-13 matrix has no permission for it).
+// If a future authenticated business route is added here, mount
+// requirePermission(PERMISSIONS...) from ../middleware/require-rbac as the
+// first route-level middleware (see docs/kanban .../task-15.md).
+
+// RBAC: public, no auth — entry page config for anonymous SPA bootstrap
+// (G2 task-10 exempt prefix).
 router.get("/api/entry-page", async (request, response) => {
     allowDevAllOrigin(response);
 
@@ -51,7 +67,13 @@ router.get("/api/entry-page", async (request, response) => {
 // the HTTP convenience mirror; the canonical switch flow stays socket.io
 // loginByToken. Membership is verified via tenant_user before any token is
 // issued — a non-member gets TranslatableError("tenantAccessDenied").
-router.post("/api/switch-tenant", bearerAuth(), async (request, response) => {
+router.post(
+    "/api/switch-tenant",
+    // RBAC: membership, not role — no permission in the task-13 matrix;
+    // getMembershipRole() below rejects non-members with tenantAccessDenied
+    // (parity with task-14's socket-side switchTenant exemption).
+    bearerAuth(),
+    async (request, response) => {
     try {
         if (!request.user || !request.user.id) {
             sendHttpError(response, "Unauthorized");
@@ -99,6 +121,8 @@ router.post("/api/switch-tenant", bearerAuth(), async (request, response) => {
     }
 });
 
+// RBAC: public, no auth — push-token IS the credential (monitor-scoped
+// secret; G2 task-10 exempt prefix).
 router.all("/api/push/:pushToken", async (request, response) => {
     try {
         let pushToken = request.params.pushToken;
@@ -205,6 +229,8 @@ router.all("/api/push/:pushToken", async (request, response) => {
     }
 });
 
+// RBAC: public, no auth — badge for public monitors only
+// (isMonitorPublic gate inside; G2 task-10 exempt prefix).
 router.get("/api/badge/:id/status", cache("5 minutes"), async (request, response) => {
     allowAllOrigin(response);
 
@@ -278,6 +304,8 @@ router.get("/api/badge/:id/status", cache("5 minutes"), async (request, response
     }
 });
 
+// RBAC: public, no auth — badge for public monitors only
+// (isMonitorPublic gate inside; G2 task-10 exempt prefix).
 router.get("/api/badge/:id/uptime/:duration?", cache("5 minutes"), async (request, response) => {
     allowAllOrigin(response);
 
@@ -342,6 +370,8 @@ router.get("/api/badge/:id/uptime/:duration?", cache("5 minutes"), async (reques
     }
 });
 
+// RBAC: public, no auth — badge for public monitors only
+// (isMonitorPublic gate inside; G2 task-10 exempt prefix).
 router.get("/api/badge/:id/ping/:duration?", cache("5 minutes"), async (request, response) => {
     allowAllOrigin(response);
 
@@ -408,6 +438,8 @@ router.get("/api/badge/:id/ping/:duration?", cache("5 minutes"), async (request,
     }
 });
 
+// RBAC: public, no auth — badge for public monitors only
+// (isMonitorPublic gate inside; G2 task-10 exempt prefix).
 router.get("/api/badge/:id/avg-response/:duration?", cache("5 minutes"), async (request, response) => {
     allowAllOrigin(response);
 
@@ -481,6 +513,8 @@ router.get("/api/badge/:id/avg-response/:duration?", cache("5 minutes"), async (
     }
 });
 
+// RBAC: public, no auth — badge for public monitors only
+// (isMonitorPublic gate inside; G2 task-10 exempt prefix).
 router.get("/api/badge/:id/cert-exp", cache("5 minutes"), async (request, response) => {
     allowAllOrigin(response);
 
@@ -564,6 +598,8 @@ router.get("/api/badge/:id/cert-exp", cache("5 minutes"), async (request, respon
     }
 });
 
+// RBAC: public, no auth — badge for public monitors only
+// (isMonitorPublic gate inside; G2 task-10 exempt prefix).
 router.get("/api/badge/:id/response", cache("5 minutes"), async (request, response) => {
     allowAllOrigin(response);
 
