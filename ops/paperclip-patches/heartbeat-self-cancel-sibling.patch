@@ -1,0 +1,39 @@
+--- a/dist/services/heartbeat.js
++++ b/dist/services/heartbeat.js
+@@ -2502,6 +2502,14 @@
+     const context = parseObject(run.contextSnapshot);
+     return readNonEmptyString(context.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
+ }
++
++function isSelfCancelledRun(run) {
++    if (!run || run.status !== "cancelled")
++        return false;
++    const result = parseObject(run.resultJson);
++    return result.selfCancel === true || result.cancelledByActorType === "agent";
++}
++
+ function isExecutionReviewParticipantRecoveryEligibleRun(run) {
+     if (!run)
+         return false;
+@@ -13238,6 +13246,21 @@
+             if (existingExecutionPath || issueHasPersistedMonitor || await findExplicitBlockerPath()) {
+                 return { kind: "released" };
+             }
++            // Risk2 fix: self-cancel with live sibling should not trigger stranded recovery.
++            // findExistingExecutionPath only matches via contextSnapshot.issueId, which misses
++            // timer-sourced siblings (no sourceIssueId). If this is a self-cancel and the
++            // same agent has any other live execution path, suppress the immediate block.
++            if (isSelfCancelledRun(run)) {
++                const siblingLiveRun = await tx
++                    .select({ id: heartbeatRuns.id })
++                    .from(heartbeatRuns)
++                    .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.agentId, run.agentId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]), sql `${heartbeatRuns.id} <> ${run.id}`))
++                    .limit(1)
++                    .then((rows) => rows[0] ?? null);
++                if (siblingLiveRun) {
++                    return { kind: "released" };
++                }
++            }
+             if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+                 return { kind: "released" };
+             }

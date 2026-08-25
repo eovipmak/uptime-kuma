@@ -1,0 +1,20 @@
+--- a/dist/services/cross-issue-influence-limit.js
++++ b/dist/services/cross-issue-influence-limit.js
+@@ -67,8 +67,16 @@
+             throw crossIssueInfluenceRunContextError();
+         }
+         const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+-        if (!sourceIssueId)
++        if (!sourceIssueId) {
++            const ctx = run.contextSnapshot && typeof run.contextSnapshot === "object" ? run.contextSnapshot : null;
++            const wakeReason = ctx ? String(ctx.wakeReason ?? ctx.reason ?? "") : "";
++            const wakeSource = ctx ? String(ctx.wakeSource ?? ctx.source ?? "") : "";
++            const isTimerRun = wakeReason === "heartbeat_timer" || wakeSource === "timer" || wakeSource === "scheduler";
++            if (isTimerRun) {
++                return null;
++            }
+             throw crossIssueInfluenceRunContextError();
++        }
+         if (sourceIssueId === input.targetIssueId ||
+             (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())) {
+             return null;

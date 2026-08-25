@@ -1,0 +1,76 @@
+--- a/dist/services/recovery/service.js
++++ b/dist/services/recovery/service.js
+@@ -416,6 +416,14 @@
+     const result = parseObject(latestRun.resultJson);
+     return result.cancelledByActorType === "user" || result.cancelledByActorType === "board";
+ }
++
++function isSelfCancelledRun(latestRun) {
++    if (!latestRun || latestRun.status !== "cancelled")
++        return false;
++    const result = parseObject(latestRun.resultJson);
++    return result.selfCancel === true || result.cancelledByActorType === "agent";
++}
++
+ function isUnsuccessfulTerminalIssueRun(latestRun) {
+     return Boolean(latestRun &&
+         UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(latestRun.status));
+@@ -607,17 +615,39 @@
+             db
+                 .select({ id: heartbeatRuns.id })
+                 .from(heartbeatRuns)
+-                .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]), sql `${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`, agentId ? eq(heartbeatRuns.agentId, agentId) : sql `true`))
++                .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]), sql `${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`, agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`))
+                 .limit(1)
+                 .then((rows) => rows[0] ?? null),
+             db
+                 .select({ id: agentWakeupRequests.id })
+                 .from(agentWakeupRequests)
+-                .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"), sql `${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`, agentId ? eq(agentWakeupRequests.agentId, agentId) : sql `true`))
++                .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"), sql `${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`, agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`))
+                 .limit(1)
+                 .then((rows) => rows[0] ?? null),
+         ]);
+-        return Boolean(run || deferredWake);
++        if (run || deferredWake)
++            return true;
++        // Risk2: also consider sibling live run that holds/adopts issue lock (timer-sourced siblings miss contextSnapshot).
++        const issueLock = await db
++            .select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId })
++            .from(issues)
++            .where(eq(issues.id, issueId))
++            .then((rows) => rows[0] ?? null);
++        if (issueLock) {
++            for (const candidateRunId of [issueLock.executionRunId, issueLock.checkoutRunId]) {
++                if (!candidateRunId)
++                    continue;
++                const live = await db
++                    .select({ id: heartbeatRuns.id })
++                    .from(heartbeatRuns)
++                    .where(and(eq(heartbeatRuns.id, candidateRunId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])))
++                    .limit(1)
++                    .then((rows) => rows[0] ?? null);
++                if (live)
++                    return true;
++            }
++        }
++        return false;
+     }
+     async function hasPendingWakeInteraction(companyId, issueId) {
+         return db
+@@ -2899,6 +2929,15 @@
+                 result.operatorCancelExempted += 1;
+                 continue;
+             }
++            // Risk2 fix: self-cancel with live sibling should not be treated as stranded.
++            // Negative case (no sibling) must still recover, so only exempt when sibling exists.
++            if (isSelfCancelledRun(latestRun)) {
++                const siblingExists = await hasActiveExecutionPath(issue.companyId, issue.id, agentId);
++                if (siblingExists) {
++                    result.operatorCancelExempted += 1;
++                    continue;
++                }
++            }
+             if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
+                 result.skipped += 1;
+                 continue;
