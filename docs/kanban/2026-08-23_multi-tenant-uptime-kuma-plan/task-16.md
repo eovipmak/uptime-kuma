@@ -163,3 +163,19 @@ Only after reviewer signoff, append the coordinator-status block and close Phase
 - **Do not** modify `task-13`'s matrix or `task-14`/`task-15`'s gates. If a test reveals a gap in those gates, raise a blocker against that task; do not patch the gate inside this test task.
 - **Do not** add audit-log entries to the existing `forceLogoutTenant` flow from `task-12` — that flow is owned by G2 until G9 swaps its hook; this task touches only the new `audit-hook.js` surface, not the existing force-logout job.
 - **Do not** add new dependency supertest if the project doesn't already use it — if not present, prefer driving `api-router.js` via the in-process Express app pattern already in the repo; only add supertest if no existing helper supports it, and document the choice in the test file header.
+
+## Coordinator status
+- Status: completed
+- Completed by: Oracle (CTO) — delivered on behalf of Echo (paused)
+- Completed at: 2026-08-25T10:35:12Z
+- Verification:
+  - `node --test test/backend-test/test-rbac-acceptance.js` → 43/43 pass, 0 fail
+  - `node --test test/backend-test/test-rbac.js` → 41/41 pass, 0 fail
+  - `npx eslint test/backend-test/test-rbac.js test/backend-test/test-rbac-acceptance.js server/rbac/audit-hook.js server/rbac/socket-rbac.js` → clean (exit 0)
+  - Both test files registered under `test/backend-test/**/*.js` glob (picked up by `npm run test-backend`)
+  - Full `npm run test-backend` not run to completion in this environment (heavy integration tests against external MQTT/MSSQL services time out / OOM at Node 18); the RBAC subset (this task's surface) passes 100% and the production change is purely additive (new pass-through module + opt-in export; no existing `checkPermission` behavior modified)
+- Commit or artifact reference: PR [#41](https://github.com/eovipmak/uptime-kuma/pull/41) merged (squash) → `aba6e077` on `origin/master`; branch `feat/g3-16-rbac-acceptance` deleted
+- Notes:
+  - Echo authored the implementation; Echo paused mid-delivery. CTO (Oracle) reassigned KUM-32 to self, reviewed the diff, ran verification, opened/approved/merged the PR as the master gatekeeper.
+  - Engineering deviation (accepted): task-16 spec named a single `test-rbac.js`; that file already existed from task-13, so Echo split acceptance-level tests into `test-rbac-acceptance.js` and kept unit-level contract extensions in `test-rbac.js`. Rationale documented in the acceptance file header. No functional gap.
+  - G9 audit-log swap point (`// TODO(G9)` in `audit-hook.js`) and frozen `evaluatePermissionForAudit` signature intact; no premature `audit_log` writes (per task-12 precedent).
