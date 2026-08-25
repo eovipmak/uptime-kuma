@@ -705,6 +705,11 @@ let needSetup = false;
 
                 leaveUserRooms(socket);
                 socket.tenantID = target.id;
+                // G3 task-13: keep the active role in sync with the active
+                // tenant. Without this, the socket would retain the previous
+                // tenant's role after a switch and RBAC checks would judge
+                // the wrong membership.
+                socket.role = membershipRole;
                 joinUserRooms(socket, {
                     tenantId: target.id,
                     userId: socket.userID,
@@ -2035,11 +2040,27 @@ async function afterLogin(socket, user, tenantID) {
     socket.userID = user.id;
 
     // G2 task-09: remember the active tenant on the socket. Consumed by task-11.
+    // The membership list is fetched at most once and reused below for the
+    // role lookup.
+    let memberships = null;
     if (tenantID !== undefined) {
         socket.tenantID = tenantID;
     } else if (socket.tenantID === undefined && user?.id != null) {
-        const tenants = await listTenantsForUser(user.id);
-        socket.tenantID = tenants[0]?.id ?? null;
+        memberships = await listTenantsForUser(user.id);
+        socket.tenantID = memberships[0]?.id ?? null;
+    }
+
+    // G3 task-13: remember the active tenant's membership role alongside the
+    // tenant id so socket-side RBAC helpers (checkRole/checkPermission) have
+    // a role to read after checkLogin(). listTenantsForUser() returns the
+    // tenant_user.role per tenant (G2 task-09) — the same source of truth as
+    // the JWT role claim. A missing role stays null and is denied loudly
+    // by the RBAC helpers; never defaulted silently.
+    if (socket.tenantID != null && user?.id != null) {
+        if (memberships === null) {
+            memberships = await listTenantsForUser(user.id);
+        }
+        socket.role = memberships.find((tenant) => tenant.id === socket.tenantID)?.role ?? null;
     }
 
     // G2 task-11: join tenant-partitioned rooms instead of the legacy raw
