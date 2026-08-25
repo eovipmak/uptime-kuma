@@ -19,6 +19,24 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 
+// Harness note (pattern of test-maintenance-tenant-map.js): the model chain
+// pulls the ESM-only `unlimited-timeout` package — unrequireable on Node < 22
+// via plain require(). Intercept that single module id with a native-timer
+// stub before the first model require so this suite loads on any supported
+// Node. Nothing else is stubbed.
+const Module = require("module");
+const origModuleLoad = Module._load;
+Module._load = function (request, parent, isMain) {
+    if (request === "unlimited-timeout") {
+        // ESM-only upstream; equivalent CJS surface backed by native timers.
+        return {
+            setTimeout: (fn, ms) => setTimeout(fn, ms),
+            clearTimeout: (t) => clearTimeout(t),
+        };
+    }
+    return origModuleLoad.call(this, request, parent, isMain);
+};
+
 const Monitor = require("../../server/model/monitor");
 const Tag = require("../../server/model/tag");
 const Group = require("../../server/model/group");
