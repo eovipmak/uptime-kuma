@@ -199,6 +199,12 @@ describe("repair-null-tenant-monitors migration", () => {
     // migration source instead. Note that knex resets a custom
     // migrationSource back to its FS source whenever a `directory` option
     // is also present, so only the source is passed here.
+    /**
+     * Apply the whole real migration chain except the repair migration under
+     * test, staging the exact pre-KUM-100 database state.
+     * @param {object} db knex instance
+     * @returns {Promise<void>} resolves when every staged migration is applied
+     */
     async function migrateLatestExceptRepair(db) {
         const files = fs.readdirSync(MIGRATION_DIRECTORY)
             .filter((f) => f.endsWith(".js") && f !== REPAIR_MIGRATION_NAME)
