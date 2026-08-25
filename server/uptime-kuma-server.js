@@ -8,11 +8,13 @@ const { log, isDev } = require("../src/util");
 const Database = require("./database");
 const util = require("util");
 const { Settings } = require("./settings");
+const { TenantUser } = require("./model/tenant_user");
 const dayjs = require("dayjs");
 const childProcessAsync = require("promisify-child-process");
 const path = require("path");
 const axios = require("axios");
 const { isSSL, sslKey, sslCert, sslKeyPassphrase } = require("./config");
+// G2 task-11: tenant-partitioned room keys for user-scoped emits
 const { userRoom } = require("./socket-handlers/tenant-room");
 // DO NOT IMPORT HERE IF THE MODULES USED `UptimeKumaServer.getInstance()`, put at the bottom of this file instead.
 
@@ -222,7 +224,7 @@ class UptimeKumaServer {
      */
     async sendMonitorList(socket) {
         let list = await this.getMonitorJSONList(socket.userID);
-        this.io.to(socket.userID).emit("monitorList", list);
+        this.io.to(userRoom(socket.tenantID, socket.userID)).emit("monitorList", list);
         return list;
     }
 
@@ -235,7 +237,7 @@ class UptimeKumaServer {
     async sendUpdateMonitorIntoList(socket, monitorID) {
         let list = await this.getMonitorJSONList(socket.userID, monitorID);
         if (list && list[monitorID]) {
-            this.io.to(socket.userID).emit("updateMonitorIntoList", list);
+            this.io.to(userRoom(socket.tenantID, socket.userID)).emit("updateMonitorIntoList", list);
         }
     }
 
@@ -246,7 +248,7 @@ class UptimeKumaServer {
      * @returns {Promise<void>}
      */
     async sendDeleteMonitorFromList(socket, monitorID) {
-        this.io.to(socket.userID).emit("deleteMonitorFromList", monitorID);
+        this.io.to(userRoom(socket.tenantID, socket.userID)).emit("deleteMonitorFromList", monitorID);
     }
 
     /**
@@ -292,11 +294,21 @@ class UptimeKumaServer {
     /**
      * Send list of maintenances to user
      * @param {number} userID User to send list to
+     * @param {number|null} tenantID Active tenant of the user (G2 task-11).
+     * When omitted, falls back to the user's primary tenant so legacy
+     * model-layer callers keep delivering until G5 owns dispatch.
      * @returns {Promise<object>} Maintenance list
      */
-    async sendMaintenanceListByUserID(userID) {
+    async sendMaintenanceListByUserID(userID, tenantID = null) {
         let list = await this.getMaintenanceJSONList(userID);
-        this.io.to(userID).emit("maintenanceList", list);
+
+        const roomTenantID = (tenantID !== null && tenantID !== undefined) ? tenantID : await TenantUser.getPrimaryTenantID(userID);
+        if (!roomTenantID) {
+            log.warn("maintenance", `sendMaintenanceListByUserID: user ${userID} has no tenant membership; skipping emit`);
+            return list;
+        }
+
+        this.io.to(userRoom(roomTenantID, userID)).emit("maintenanceList", list);
         return list;
     }
 

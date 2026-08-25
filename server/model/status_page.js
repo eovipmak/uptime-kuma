@@ -1,5 +1,7 @@
 const { BeanModel } = require("redbean-node/dist/bean-model");
 const { R } = require("redbean-node");
+// G2 task-11: tenant-partitioned room key for user-scoped emits
+const { userRoom } = require("../socket-handlers/tenant-room");
 const cheerio = require("cheerio");
 const { UptimeKumaServer } = require("../uptime-kuma-server");
 const jsesc = require("jsesc");
@@ -372,7 +374,7 @@ class StatusPage extends BeanModel {
             result[item.id] = await item.toJSON();
         }
 
-        io.to(socket.userID).emit("statusPageList", result);
+        io.to(userRoom(socket.tenantID, socket.userID)).emit("statusPageList", result);
         return list;
     }
 
