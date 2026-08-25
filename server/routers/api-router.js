@@ -18,6 +18,9 @@ const { Prometheus } = require("../prometheus");
 const Database = require("../database");
 const { UptimeCalculator } = require("../uptime-calculator");
 const { Settings } = require("../settings");
+// G2 task-11: push flow emits to the monitor's tenant-scoped user room
+const { userRoom } = require("../socket-handlers/tenant-room");
+const { TenantUser } = require("../model/tenant_user");
 
 let router = express.Router();
 
@@ -124,7 +127,12 @@ router.all("/api/push/:pushToken", async (request, response) => {
 
         await R.store(bean);
 
-        io.to(monitor.user_id).emit("heartbeat", bean.toJSON());
+        // G2 task-11: route to the monitor's tenant-scoped user room; rows
+        // predating the G4 tenant backfill fall back to the owner's primary tenant.
+        const pushTenantID = (monitor.tenant_id != null) ? monitor.tenant_id : await TenantUser.getPrimaryTenantID(monitor.user_id);
+        if (pushTenantID) {
+            io.to(userRoom(pushTenantID, monitor.user_id)).emit("heartbeat", bean.toJSON());
+        }
 
         Monitor.sendStats(io, monitor.id, monitor.user_id);
 
