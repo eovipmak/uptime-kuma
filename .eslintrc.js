@@ -20,7 +20,9 @@ module.exports = {
         sourceType: "module",
         requireConfigFile: false,
     },
-    plugins: ["jsdoc", "@typescript-eslint"],
+    // "uptime-kuma" is the local plugin in server/repository/eslint-rules/ (G4.17),
+    // linked via the file: devDependency "eslint-plugin-uptime-kuma".
+    plugins: ["jsdoc", "@typescript-eslint", "uptime-kuma"],
     rules: {
         yoda: "error",
         eqeqeq: ["warn", "smart"],
@@ -96,6 +98,10 @@ module.exports = {
         ],
         "jsdoc/require-param-type": "warn",
         "jsdoc/require-param-description": "warn",
+        // G4.17 (KUM-33): tenant-scoping guard for R.findOne/R.find/R.findAll/R.exec.
+        // Ships as "warn" because existing call sites are still un-migrated; task-18/task-19
+        // flip this to "error" per-file as they migrate to the server/repository wrappers.
+        "uptime-kuma/require-tenant-scope": "warn",
     },
     overrides: [
         // Override for TypeScript
