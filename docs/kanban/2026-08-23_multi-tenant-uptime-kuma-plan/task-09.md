@@ -1,7 +1,7 @@
 # Task G2.09 — JWT Claims + Tenant Picker on Login
 
 **Phase:** G2 — Authentication & Tenant Context
-**Status:** todo
+**Status:** completed
 **Reviewer:** Auth lead / Uptime Kuma maintainer
 
 ## Objective
@@ -143,3 +143,10 @@ Auth lead / Uptime Kuma maintainer. Specifically confirms:
 - **Do not** switch to refresh tokens as a separate mechanism — the plan's "Refresh token when switch tenant" is satisfied by re-issuing an access token on `loginByToken` per step 4; no separate refresh-token table needed in this phase.
 - **Do not** introduce a new JWT secret rotation scheme — the existing `server.jwtSecret` stays.
 - **Do not** modify the 2FA secret rotation flow (just verify it doesn't break).
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle) — kanban-task-coordinator
+- Completed at: 2026-08-25T00:20:00Z
+- Verification: eslint clean on all 5 files; check-lang-json OK; tsc OK; npm run test-backend failure set identical to pristine master baseline (no regressions); test-tenant-migration.js 2 pass / 0 fail; JWT decode `{ username, h, tid=42, role=tenant_admin }`; loginByToken stale/legacy-tid fallback + re-issue matrix verified; seedDefaultTenantIfEmpty confirmed idempotent and binds the new admin as tenant_admin
+- Commit or artifact reference: PR #21 closed (stacked task-11 commit); replaced by PR #24, merged squash commit 4b66648d on master; Paperclip KUM-72 (verdict comment aa097820)
