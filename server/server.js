@@ -1651,6 +1651,7 @@ let needSetup = false;
 
                 // G4.18 exemption: INSERT into a parent-anchored junction whose
                 // parents were verified in-tenant above.
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_tag has no tenant_id column (ADR-0002); both parents (monitor, tag) verified in-tenant above
                 await R.exec("INSERT INTO monitor_tag (tag_id, monitor_id, value) VALUES (?, ?, ?)", [
                     tagID,
                     monitorID,
@@ -1681,6 +1682,7 @@ let needSetup = false;
 
                 // G4.18: parent-anchored junction — the IN-subquery pins the
                 // monitor to the caller's tenant (ADR-0002 pattern)
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_tag has no tenant_id column (ADR-0002); rows pinned via IN-subquery on monitor.tenant_id
                 await R.exec(
                     "UPDATE monitor_tag SET value = ? WHERE tag_id = ? AND monitor_id = ? " +
                     "AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)", [
@@ -1715,6 +1717,7 @@ let needSetup = false;
 
                 // G4.18: parent-anchored junction — the IN-subquery pins the
                 // monitor to the caller's tenant (ADR-0002 pattern)
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_tag has no tenant_id column (ADR-0002); rows pinned via IN-subquery on monitor.tenant_id
                 await R.exec(
                     "DELETE FROM monitor_tag WHERE tag_id = ? AND monitor_id = ? AND value = ? " +
                     "AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?)", [
@@ -2077,6 +2080,7 @@ let needSetup = false;
 
                 // G4.18: parent-anchored heartbeat rows (ADR-0002) — the
                 // IN-subquery pins the update to the caller's tenant's monitor
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- heartbeat has no tenant_id column (ADR-0002); rows pinned via IN-subquery on monitor.tenant_id
                 await R.exec(
                     "UPDATE heartbeat SET msg = ?, important = ? WHERE monitor_id = ? " +
                     "AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?) ",
@@ -2218,11 +2222,14 @@ let needSetup = false;
  * @param {number} monitorID ID of monitor to update
  * @param {number[]} notificationIDList List of new notification
  * providers to add
+ * @param {number} tenantID Tenant of the calling user; pins junction
+ * rewrites to this tenant's monitors and notifications
  * @returns {Promise<void>}
  */
 async function updateMonitorNotification(monitorID, notificationIDList, tenantID) {
     // G4.18: parent-anchored junction (ADR-0002) — the IN-subquery pins the
     // delete to monitors of the caller's tenant
+    // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_notification has no tenant_id column (ADR-0002); rows pinned via IN-subquery on monitor.tenant_id
     await R.exec(
         "DELETE FROM monitor_notification WHERE monitor_id = ? " +
         "AND monitor_id IN (SELECT id FROM monitor WHERE tenant_id = ?) ",

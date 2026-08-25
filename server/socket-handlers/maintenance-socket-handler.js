@@ -103,6 +103,9 @@ module.exports.maintenanceSocketHandler = (socket) => {
                 throw new Error("Maintenance not found or access denied.");
             }
 
+            // G4.18: junction rows are parent-anchored (ADR-0002); the IN-subquery
+            // pins the delete to maintenance rows of the caller's tenant
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_maintenance has no tenant_id column (ADR-0002); rows pinned via IN-subquery on maintenance.tenant_id
             await R.exec(
                 "DELETE FROM monitor_maintenance WHERE maintenance_id = ? " +
                 "AND maintenance_id IN (SELECT id FROM maintenance WHERE tenant_id = ?)", [
@@ -163,6 +166,9 @@ module.exports.maintenanceSocketHandler = (socket) => {
                 throw new Error("Maintenance not found or access denied.");
             }
 
+            // G4.18: junction rows are parent-anchored (ADR-0002); the IN-subquery
+            // pins the delete to maintenance rows of the caller's tenant
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- maintenance_status_page has no tenant_id column (ADR-0002); rows pinned via IN-subquery on maintenance.tenant_id
             await R.exec(
                 "DELETE FROM maintenance_status_page WHERE maintenance_id = ? " +
                 "AND maintenance_id IN (SELECT id FROM maintenance WHERE tenant_id = ?)", [

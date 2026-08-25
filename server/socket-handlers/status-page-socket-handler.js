@@ -125,6 +125,7 @@ module.exports.statusPageSocketHandler = (socket) => {
                 throw new Error("slug is not found");
             }
 
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident has no tenant_id column (ADR-0002); rows pinned via IN-subquery on status_page.tenant_id
             await R.exec(
                 "UPDATE incident SET pin = 0 WHERE pin = 1 AND status_page_id = ? " +
                 "AND status_page_id IN (SELECT id FROM status_page WHERE tenant_id = ?) ",
@@ -459,6 +460,7 @@ module.exports.statusPageSocketHandler = (socket) => {
                 await R.store(groupBean);
 
                 // G4.18: junction cleanup pinned to the caller's tenant's groups
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_group has no tenant_id column (ADR-0002); rows pinned via IN-subquery on group.tenant_id
                 await R.exec(
                     "DELETE FROM monitor_group WHERE group_id = ? " +
                     "AND group_id IN (SELECT id FROM `group` WHERE tenant_id = ?)", [
@@ -615,6 +617,7 @@ module.exports.statusPageSocketHandler = (socket) => {
 
                 // Delete incident
                 // G4.18: parent-anchored incident rows pinned to the caller's tenant
+                // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident has no tenant_id column (ADR-0002); rows pinned via IN-subquery on status_page.tenant_id
                 await R.exec(
                     "DELETE FROM incident WHERE status_page_id = ? " +
                     "AND status_page_id IN (SELECT id FROM status_page WHERE tenant_id = ?) ",

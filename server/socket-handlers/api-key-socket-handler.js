@@ -2,7 +2,6 @@ const { checkLogin } = require("../util-server");
 const { checkPermission } = require("../rbac/socket-rbac");
 const { PERMISSIONS } = require("../rbac/permissions");
 const { log } = require("../../src/util");
-const { R } = require("redbean-node");
 // G4.18 (KUM-34): tenant-safe query wrappers
 const { execForTenant } = require("../repository");
 const { nanoid } = require("nanoid");
