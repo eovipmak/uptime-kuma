@@ -15,34 +15,48 @@ let router = express.Router();
 // custom domain → default fallback) WITHOUT authentication; the context is
 // consumed by G6 to scope slug lookups. No requireTenantContext() here —
 // these routes are public by design (ADR-0003 §2.2).
+//
+// G3 task-15 — RBAC sweep disposition: EVERY route in this router is a
+// public reader path (`// RBAC: public, no auth`). There is no authenticated
+// HTTP editor path for status pages in this fork — save/delete flow over
+// Socket.IO and is gated there by task-14's socket RBAC helpers against the
+// same task-13 matrix. Do NOT mount auth/RBAC middleware here; the public
+// viewer has no role. If an authenticated status-page editor route is ever
+// added to this file, mount requirePermission(PERMISSIONS.STATUS_PAGE_*)
+// from ../middleware/require-rbac on it instead of weakening these publics.
 router.use(resolveTenant());
 
 let cache = apicache.middleware;
 const server = UptimeKumaServer.getInstance();
 
+// RBAC: public, no auth
 router.get("/status/:slug", cache("5 minutes"), async (request, response) => {
     let slug = request.params.slug;
     slug = slug.toLowerCase();
     await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug);
 });
 
+// RBAC: public, no auth
 router.get("/status/:slug/rss", cache("5 minutes"), async (request, response) => {
     let slug = request.params.slug;
     slug = slug.toLowerCase();
     await StatusPage.handleStatusPageRSSResponse(response, slug, request);
 });
 
+// RBAC: public, no auth
 router.get("/status", cache("5 minutes"), async (request, response) => {
     let slug = "default";
     await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug);
 });
 
+// RBAC: public, no auth
 router.get("/status-page", cache("5 minutes"), async (request, response) => {
     let slug = "default";
     await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug);
 });
 
 // Status page config, incident, monitor list
+// RBAC: public, no auth — published status page data for anonymous viewers
 router.get("/api/status-page/:slug", cache("5 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
     let slug = request.params.slug;
@@ -68,6 +82,7 @@ router.get("/api/status-page/:slug", cache("5 minutes"), async (request, respons
 
 // Status Page Polling Data
 // Can fetch only if published
+// RBAC: public, no auth — published status page data for anonymous viewers
 router.get("/api/status-page/heartbeat/:slug", cache("1 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
 
@@ -117,6 +132,7 @@ router.get("/api/status-page/heartbeat/:slug", cache("1 minutes"), async (reques
 });
 
 // Status page's manifest.json
+// RBAC: public, no auth
 router.get("/api/status-page/:slug/manifest.json", cache("1440 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
     let slug = request.params.slug;
@@ -149,6 +165,7 @@ router.get("/api/status-page/:slug/manifest.json", cache("1440 minutes"), async 
     }
 });
 
+// RBAC: public, no auth
 router.get("/api/status-page/:slug/incident-history", cache("5 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
 
@@ -174,6 +191,7 @@ router.get("/api/status-page/:slug/incident-history", cache("5 minutes"), async 
 });
 
 // overall status-page status badge
+// RBAC: public, no auth
 router.get("/api/status-page/:slug/badge", cache("5 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
     let slug = request.params.slug;
