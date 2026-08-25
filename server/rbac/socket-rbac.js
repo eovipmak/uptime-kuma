@@ -17,6 +17,7 @@
 
 const TranslatableError = require("../translatable-error");
 const { buildAbilityFor } = require("./policy");
+const { evaluatePermissionForAudit } = require("./audit-hook");
 
 /**
  * Throw unless the socket's active-tenant role is one of the given roles.
@@ -63,4 +64,36 @@ function getSocketRole(socket) {
     return socket.role ?? null;
 }
 
-module.exports = { checkRole, checkPermission, getSocketRole };
+/**
+ * RBAC check with an audit hook — mirror of `checkPermission` that routes the
+ * decision through audit-hook.js so G9 can swap in an `audit_log` write
+ * without any contract change.
+ *
+ * For G3 (task-16) this is a pass-through: it returns the SAME decision as
+ * `checkPermission` (audit-hook.js is a no-op audit-wise in G3). task-14/15
+ * keep using the plain `checkPermission`; this audited variant exists so a
+ * G9 re-thread is a mechanical call swap, not a signature change.
+ * @param {object} socket Socket.io socket (`socket.role` set by afterLogin)
+ * @param {string} permission Permission string (e.g. PERMISSIONS.MONITOR_CREATE)
+ * @param {string} action Audit action label (defaults to the permission)
+ * @returns {void}
+ * @throws {TranslatableError} forbiddenRole on missing role, forbiddenPermission
+ * when the matrix denies the permission
+ */
+function checkPermissionWithAuditTrail(socket, permission, action = permission) {
+    const role = getSocketRole(socket);
+    if (!role) {
+        throw new TranslatableError("forbiddenRole");
+    }
+    // Audit hook carries ctx for G9's audit_log row; decision still from matrix.
+    const allowed = evaluatePermissionForAudit({
+        role,
+        userId: socket.userID,
+        tenantId: socket.tenantID,
+    }, permission);
+    if (!allowed) {
+        throw new TranslatableError("forbiddenPermission");
+    }
+}
+
+module.exports = { checkRole, checkPermission, getSocketRole, checkPermissionWithAuditTrail };

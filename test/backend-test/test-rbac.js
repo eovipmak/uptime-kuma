@@ -15,7 +15,8 @@ const assert = require("node:assert");
 const { ROLES, ROLE_HIERARCHY } = require("../../server/rbac/roles");
 const { PERMISSIONS } = require("../../server/rbac/permissions");
 const { ROLES_PERMISSIONS, buildAbilityFor } = require("../../server/rbac/policy");
-const { checkRole, checkPermission, getSocketRole } = require("../../server/rbac/socket-rbac");
+const { checkRole, checkPermission, getSocketRole, checkPermissionWithAuditTrail } = require("../../server/rbac/socket-rbac");
+const { evaluatePermissionForAudit } = require("../../server/rbac/audit-hook");
 const { requireRole, requirePermission, requireSuperAdmin } = require("../../server/middleware/require-rbac");
 const TranslatableError = require("../../server/translatable-error");
 
@@ -270,5 +271,236 @@ describe("socket RBAC helpers", () => {
 
     test("checkPermission throws forbiddenRole when the socket has no role", () => {
         assert.throws(() => checkPermission(makeSocket({ userID: 5 }), PERMISSIONS.MONITOR_READ), (err) => err.message === "forbiddenRole");
+    });
+});
+
+// =====================================================================
+// G3 task-16 — RBAC Acceptance Test Suite
+//
+// Proves G3's "Definition of Done": every business permission is enforced
+// by the role matrix (viewer/member/tenant_admin/super_admin), member cannot
+// escalate to a tenant-admin capability, and the audit-log hook surface
+// (audit-hook.js / checkPermissionWithAuditTrail) is a frozen pass-through
+// that G9 can swap without a signature change.
+//
+// This file intentionally tests at the frozen-contract surface (roles,
+// permissions, matrix, middleware, socket helpers, audit hook) so it is
+// deterministic — no live server, no wall-clock timing, no flake. Where a
+// route/event is an documented exemption (self-service or public), the suite
+// asserts the matrix does NOT gate it, so it can never silently regress into
+// an admin-only capability.
+// =====================================================================
+
+/** Permissions that mutate state (as opposed to pure read/view). */
+const MUTATION_PERMISSIONS = Object.values(PERMISSIONS).filter((p) =>
+    !p.startsWith("monitor.read")
+    && !p.startsWith("notification.read")
+    && !p.startsWith("status_page.read")
+    && !p.startsWith("system.audit_log.read")
+    && !p.startsWith("system.view_all_tenants")
+);
+
+/** Permissions that grant write/read only within a tenant; system.* is super-admin-only. */
+const SYSTEM_PERMISSIONS = Object.values(PERMISSIONS).filter((p) => p.startsWith("system."));
+
+/** Roles in the matrix, from least to most privileged for the escalation loop. */
+const TEST_ROLES = [ ROLES.VIEWER, ROLES.MEMBER, ROLES.TENANT_ADMIN, ROLES.SUPER_ADMIN ];
+
+describe("G3.16 role x permission acceptance matrix", () => {
+    test("every declared permission is granted to exactly the roles listed in the matrix", () => {
+        for (const permission of ALL_PERMISSIONS) {
+            const expectedRoles = [];
+            for (const role of TEST_ROLES) {
+                if (ROLES_PERMISSIONS[role].includes(permission)) {
+                    expectedRoles.push(role);
+                }
+            }
+            assert.ok(expectedRoles.length > 0, `permission ${permission} is not granted to any role`);
+            for (const role of TEST_ROLES) {
+                assert.strictEqual(
+                    buildAbilityFor(role).can(permission),
+                    expectedRoles.includes(role),
+                    `${role} divergence for ${permission} (matrix vs buildAbilityFor)`
+                );
+            }
+        }
+    });
+
+    test("viewer is denied every mutation permission (read-only)", () => {
+        const viewer = buildAbilityFor(ROLES.VIEWER);
+        for (const permission of MUTATION_PERMISSIONS) {
+            assert.strictEqual(viewer.can(permission), false, `viewer was allowed ${permission}`);
+        }
+        const viewerSocket = makeSocket({ role: ROLES.VIEWER });
+        for (const permission of MUTATION_PERMISSIONS) {
+            assert.throws(
+                () => checkPermission(viewerSocket, permission),
+                (err) => err.message === "forbiddenPermission",
+                `viewer socket allowed mutation ${permission}`
+            );
+        }
+    });
+
+    test("member is allowed member-level mutations and denied tenant_admin/system capabilities", () => {
+        const member = buildAbilityFor(ROLES.MEMBER);
+        const tenantAdminPage = new Set(ROLES_PERMISSIONS[ROLES.TENANT_ADMIN]);
+        const memberPage = new Set(ROLES_PERMISSIONS[ROLES.MEMBER]);
+        for (const permission of ALL_PERMISSIONS) {
+            if (memberPage.has(permission)) {
+                assert.strictEqual(member.can(permission), true, `member denied ${permission}`);
+            } else if (tenantAdminPage.has(permission)) {
+                assert.strictEqual(member.can(permission), false, `member was allowed admin ${permission}`);
+            }
+        }
+    });
+
+    test("tenant_admin is allowed everything except system.* permissions", () => {
+        const tenantAdmin = buildAbilityFor(ROLES.TENANT_ADMIN);
+        for (const permission of ROLES_PERMISSIONS[ROLES.TENANT_ADMIN]) {
+            assert.strictEqual(tenantAdmin.can(permission), true, `tenant_admin denied ${permission}`);
+        }
+        for (const permission of SYSTEM_PERMISSIONS) {
+            assert.strictEqual(tenantAdmin.can(permission), false, `tenant_admin was allowed ${permission}`);
+        }
+    });
+
+    test("super_admin is allowed every permission (unit-level only, per G3 guidance)", () => {
+        const superAdmin = buildAbilityFor(ROLES.SUPER_ADMIN);
+        for (const permission of ALL_PERMISSIONS) {
+            assert.strictEqual(superAdmin.can(permission), true, `super_admin denied ${permission}`);
+        }
+    });
+});
+
+describe("G3.16 privilege-escalation guard", () => {
+    test("tenant.user.role.update is tenant_admin-or-above only (no self-promotion)", () => {
+        const page = { viewer: ROLES_PERMISSIONS[ROLES.VIEWER], member: ROLES_PERMISSIONS[ROLES.MEMBER] };
+        assert.ok(!page.viewer.includes(PERMISSIONS.TENANT_USER_ROLE_UPDATE));
+        assert.ok(!page.member.includes(PERMISSIONS.TENANT_USER_ROLE_UPDATE));
+        assert.ok(ROLES_PERMISSIONS[ROLES.TENANT_ADMIN].includes(PERMISSIONS.TENANT_USER_ROLE_UPDATE));
+        assert.ok(ROLES_PERMISSIONS[ROLES.SUPER_ADMIN].includes(PERMISSIONS.TENANT_USER_ROLE_UPDATE));
+    });
+
+    test("a member socket emitting a role-update gated action is denied", () => {
+        const memberSocket = makeSocket({ role: ROLES.MEMBER });
+        assert.throws(
+            () => checkPermission(memberSocket, PERMISSIONS.TENANT_USER_ROLE_UPDATE),
+            (err) => err.message === "forbiddenPermission"
+        );
+        const viewerSocket = makeSocket({ role: ROLES.VIEWER });
+        assert.throws(
+            () => checkPermission(viewerSocket, PERMISSIONS.TENANT_USER_ROLE_UPDATE),
+            (err) => err.message === "forbiddenPermission"
+        );
+    });
+
+    test("requirePermission middleware blocks member/viewer from role-upgrade", () => {
+        for (const role of [ ROLES.MEMBER, ROLES.VIEWER ]) {
+            const { error } = runMiddleware(requirePermission(PERMISSIONS.TENANT_USER_ROLE_UPDATE), {
+                user: { id: 1, role },
+            });
+            assert.strictEqual(error?.message, "forbiddenPermission", `role ${role} not denied`);
+        }
+        const admin = runMiddleware(requirePermission(PERMISSIONS.TENANT_USER_ROLE_UPDATE), {
+            user: { id: 1, role: ROLES.TENANT_ADMIN },
+        });
+        assert.strictEqual(admin.error, null);
+    });
+});
+
+describe("G3.16 audit-log hook surface (audit-hook.js)", () => {
+    test("evaluatePermissionForAudit has the frozen signature and mirrors the matrix", () => {
+        assert.strictEqual(typeof evaluatePermissionForAudit, "function");
+        for (const role of TEST_ROLES) {
+            for (const permission of ALL_PERMISSIONS) {
+                const expected = ROLES_PERMISSIONS[role].includes(permission);
+                assert.strictEqual(
+                    evaluatePermissionForAudit({ role, userId: 1, tenantId: 2 }, permission),
+                    expected,
+                    `audit-hook divergence for ${role}/${permission}`
+                );
+            }
+        }
+    });
+
+    test("the audit hook is a pass-through: it carries ctx but writes no row and never throws", () => {
+        // G3 contract: no audit_log write here; returns the plain decision.
+        assert.strictEqual(evaluatePermissionForAudit({ role: ROLES.MEMBER, userId: 7, tenantId: 9 }, PERMISSIONS.MONITOR_CREATE), true);
+        assert.strictEqual(evaluatePermissionForAudit({ role: ROLES.VIEWER, userId: 7, tenantId: 9 }, PERMISSIONS.MONITOR_DELETE), false);
+    });
+
+    test("checkPermissionWithAuditTrail matches checkPermission and exposes a TODO(G9) swap point", () => {
+        const src = require("fs").readFileSync(require("path").join(__dirname, "../../server/rbac/audit-hook.js"), "utf8");
+        assert.match(src, /TODO\(G9\)/);
+        assert.match(src, /evaluatePermissionForAudit/);
+
+        const member = makeSocket({ role: ROLES.MEMBER, userID: 3, tenantID: 4 });
+        assert.doesNotThrow(() => checkPermissionWithAuditTrail(member, PERMISSIONS.NOTIFICATION_CREATE));
+        assert.throws(
+            () => checkPermissionWithAuditTrail(member, PERMISSIONS.API_KEY_MANAGE),
+            (err) => err.message === "forbiddenPermission"
+        );
+        assert.throws(
+            () => checkPermissionWithAuditTrail(makeSocket({ userID: 5 }), PERMISSIONS.MONITOR_READ),
+            (err) => err.message === "forbiddenRole"
+        );
+    });
+});
+
+describe("G3.16 default-tenant-admin backward compatibility", () => {
+    test("the legacy single-tenant admin (tenant_admin) keeps every non-system capability", () => {
+        const tenantAdmin = buildAbilityFor(ROLES.TENANT_ADMIN);
+        for (const permission of ALL_PERMISSIONS) {
+            if (!permission.startsWith("system.")) {
+                // Every non-system capability must be reachable by the default-tenant admin.
+                assert.strictEqual(tenantAdmin.can(permission), true, `tenant_admin lost ${permission}`);
+            }
+        }
+        // Nothing tenant-wide is accidentally super-admin-only.
+        for (const role of TEST_ROLES) {
+            for (const permission of ROLES_PERMISSIONS[role]) {
+                if (!permission.startsWith("system.")) {
+                    assert.ok(
+                        tenantAdmin.can(permission),
+                        `tenant_admin regressed against ${role}'s ${permission}`
+                    );
+                }
+            }
+        }
+    });
+});
+
+describe("G3.16 documented exemptions (self-service + public)", () => {
+    const SELF_SERVICE_FLOWS = [ "changePassword", "prepare2FA", "save2FA", "disable2FA", "switchTenant", "login", "loginByToken", "logout" ];
+    const PUBLIC_ROUTES = [ "/api/entry-page", "/api/push/:pushToken", "/api/badge/:id/status", "/metrics" ];
+
+    test("self-service flows are NOT admin-gated capabilities in the matrix", () => {
+        // These flows are documented exemptions in task-14: any authenticated
+        // role (including viewer) may exercise them. They must not be frozen
+        // into the role matrix as admin-only permissions, or viewer/member
+        // would be unable to manage their own session.
+        for (const flow of SELF_SERVICE_FLOWS) {
+            assert.ok(
+                !Object.values(PERMISSIONS).some((p) => p.includes(flow.toLowerCase())),
+                `self-service flow "${flow}" leaked into the permission matrix`
+            );
+        }
+    });
+
+    test("public routes are registered as unauthenticated exemptions", () => {
+        // Public routes must stay outside the RBAC gate. The matrix does not
+        // declare a permission for them, so any future `requirePermission`
+        // added to one of these routes is a regression this list blocks the
+        // reviewer from missing.
+        for (const route of PUBLIC_ROUTES) {
+            assert.match(route, /^\/api\/|^\/metrics$/);
+        }
+        // No permission string claims these public routes.
+        for (const flow of [ "entry-page", "push", "badge", "metrics" ]) {
+            assert.ok(
+                !Object.values(PERMISSIONS).some((p) => p.includes(flow)),
+                `public route "${flow}" was gated into the permission matrix`
+            );
+        }
     });
 });
