@@ -5,6 +5,7 @@ const fsAsync = require("fs").promises;
 const path = require("path");
 const Database = require("./database");
 const { axiosAbortSignal, fsExists } = require("./util-server");
+const { findOneForTenant, dispenseForTenant, execForTenant, resolveTenantId } = require("./repository/tenant-repo");
 
 class DockerHost {
     static CertificateFileNameCA = "ca.pem";
@@ -16,19 +17,23 @@ class DockerHost {
      * @param {object} dockerHost Docker host to save
      * @param {?number} dockerHostID ID of the docker host to update
      * @param {number} userID ID of the user who adds the docker host
+     * @param {number|null} tenantId Active tenant of the caller (G4.19). When
+     * omitted, falls back to the seeded default tenant so legacy in-process
+     * callers keep working (logged, never silent).
      * @returns {Promise<Bean>} Updated docker host
      */
-    static async save(dockerHost, dockerHostID, userID) {
+    static async save(dockerHost, dockerHostID, userID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "DockerHost.save");
         let bean;
 
         if (dockerHostID) {
-            bean = await R.findOne("docker_host", " id = ? AND user_id = ? ", [dockerHostID, userID]);
+            bean = await findOneForTenant("docker_host", " id = ? AND user_id = ? ", [dockerHostID, userID], scopedTenantId);
 
             if (!bean) {
                 throw new Error("docker host not found");
             }
         } else {
-            bean = R.dispense("docker_host");
+            bean = dispenseForTenant("docker_host", scopedTenantId);
         }
 
         bean.user_id = userID;
@@ -45,17 +50,22 @@ class DockerHost {
      * Delete a Docker host
      * @param {number} dockerHostID ID of the Docker host to delete
      * @param {number} userID ID of the user who created the Docker host
+     * @param {number|null} tenantId Active tenant of the caller (G4.19); see save()
      * @returns {Promise<void>}
      */
-    static async delete(dockerHostID, userID) {
-        let bean = await R.findOne("docker_host", " id = ? AND user_id = ? ", [dockerHostID, userID]);
+    static async delete(dockerHostID, userID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "DockerHost.delete");
+        let bean = await findOneForTenant("docker_host", " id = ? AND user_id = ? ", [dockerHostID, userID], scopedTenantId);
 
         if (!bean) {
             throw new Error("docker host not found");
         }
 
-        // Delete removed proxy from monitors if exists
-        await R.exec("UPDATE monitor SET docker_host = null WHERE docker_host = ?", [dockerHostID]);
+        // Delete removed proxy from monitors if exists. Multi-row by design:
+        // every monitor referencing this host is unlinked, tenant-scoped.
+        await execForTenant("UPDATE monitor SET docker_host = null WHERE docker_host = ?", [dockerHostID], scopedTenantId, {
+            requireId: false,
+        });
 
         await R.trash(bean);
     }

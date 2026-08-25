@@ -1,5 +1,6 @@
 const { R } = require("redbean-node");
 const { log } = require("../src/util");
+const { findOneForTenant, dispenseForTenant, resolveTenantId } = require("./repository/tenant-repo");
 const Alerta = require("./notification-providers/alerta");
 const AlertNow = require("./notification-providers/alertnow");
 const AliyunSms = require("./notification-providers/aliyun-sms");
@@ -264,19 +265,23 @@ class Notification {
      * @param {object} notification Notification to save
      * @param {?number} notificationID ID of notification to update
      * @param {number} userID ID of user who adds notification
+     * @param {number|null} tenantId Active tenant of the caller (G4.19). When
+     * omitted, falls back to the seeded default tenant so legacy in-process
+     * callers keep working (logged, never silent).
      * @returns {Promise<Bean>} Notification that was saved
      */
-    static async save(notification, notificationID, userID) {
+    static async save(notification, notificationID, userID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Notification.save");
         let bean;
 
         if (notificationID) {
-            bean = await R.findOne("notification", " id = ? AND user_id = ? ", [notificationID, userID]);
+            bean = await findOneForTenant("notification", " id = ? AND user_id = ? ", [notificationID, userID], scopedTenantId);
 
             if (!bean) {
                 throw new Error("notification not found");
             }
         } else {
-            bean = R.dispense("notification");
+            bean = dispenseForTenant("notification", scopedTenantId);
         }
 
         // applyExisting is one time only, don't save it to database.
@@ -290,7 +295,7 @@ class Notification {
         await R.store(bean);
 
         if (applyExisting) {
-            await applyNotificationEveryMonitor(bean.id, userID);
+            await applyNotificationEveryMonitor(bean.id, userID, scopedTenantId);
         }
 
         return bean;
@@ -300,10 +305,12 @@ class Notification {
      * Delete a notification
      * @param {number} notificationID ID of notification to delete
      * @param {number} userID ID of user who created notification
+     * @param {number|null} tenantId Active tenant of the caller (G4.19); see save()
      * @returns {Promise<void>}
      */
-    static async delete(notificationID, userID) {
-        let bean = await R.findOne("notification", " id = ? AND user_id = ? ", [notificationID, userID]);
+    static async delete(notificationID, userID, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Notification.delete");
+        let bean = await findOneForTenant("notification", " id = ? AND user_id = ? ", [notificationID, userID], scopedTenantId);
 
         if (!bean) {
             throw new Error("notification not found");
@@ -337,18 +344,24 @@ class Notification {
  * Apply the notification to every monitor
  * @param {number} notificationID ID of notification to apply
  * @param {number} userID ID of user who created notification
+ * @param {number} tenantId Active tenant of the caller (G4.19); only the
+ * tenant's monitors receive the notification
  * @returns {Promise<void>}
  */
-async function applyNotificationEveryMonitor(notificationID, userID) {
-    let monitors = await R.getAll("SELECT id FROM monitor WHERE user_id = ?", [userID]);
+async function applyNotificationEveryMonitor(notificationID, userID, tenantId) {
+    // A user may hold monitors in more than one tenant; applyExisting applies
+    // per active tenant only.
+    let monitors = await R.getAll("SELECT id FROM monitor WHERE user_id = ? AND tenant_id = ?", [userID, tenantId]);
 
     for (let i = 0; i < monitors.length; i++) {
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_notification is FK-anchored to monitor (no tenant_id column by G1 design); the monitor id above is already tenant-verified
         let checkNotification = await R.findOne("monitor_notification", " monitor_id = ? AND notification_id = ? ", [
             monitors[i].id,
             notificationID,
         ]);
 
         if (!checkNotification) {
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- join-table row born under a tenant-verified monitor anchor; no tenant_id column exists on monitor_notification (G1)
             let relation = R.dispense("monitor_notification");
             relation.monitor_id = monitors[i].id;
             relation.notification_id = notificationID;
