@@ -22,7 +22,9 @@ module.exports.proxySocketHandler = (socket) => {
             // list is pushed to the caller after mutations.
             checkPermission(socket, PERMISSIONS.PROXY_MANAGE);
 
-            const proxyBean = await Proxy.save(proxy, proxyID, socket.userID);
+            // G4.21: thread the caller's active tenant so the row is born in
+            // (or looked up within) the right tenant, not the default fallback
+            const proxyBean = await Proxy.save(proxy, proxyID, socket.userID, socket.tenantID);
             await sendProxyList(socket);
 
             if (proxy.applyExisting) {
@@ -50,7 +52,8 @@ module.exports.proxySocketHandler = (socket) => {
             // G3 task-14: mutation — proxy management is tenant_admin (task-13 matrix)
             checkPermission(socket, PERMISSIONS.PROXY_MANAGE);
 
-            await Proxy.delete(proxyID, socket.userID);
+            // G4.21: tenant-scoped delete — see addProxy above
+            await Proxy.delete(proxyID, socket.userID, socket.tenantID);
             await sendProxyList(socket);
             await Proxy.reloadProxy();
 

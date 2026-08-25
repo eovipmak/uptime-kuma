@@ -412,6 +412,27 @@ class UptimeKumaServer {
     }
 
     /**
+     * Retrieve a specific maintenance scoped to the caller's active tenant
+     * (G4.21). Reads only the tenant-partitioned map, so a user belonging to
+     * multiple tenants can never fetch (and then pause/edit/resume) their own
+     * row living in another tenant — the legacy flat map is keyed by id alone
+     * and guarded by nothing, which G4.20's IDOR suite flagged.
+     *
+     * Returns the live in-memory bean (with its Croner job attached), so
+     * pause/edit/resume keep controlling the running schedule like before.
+     * @param {number} maintenanceID ID of maintenance to retrieve
+     * @param {number} tenantID Active tenant of the caller (socket.tenantID)
+     * @returns {(object|null)} Maintenance if it exists in that tenant
+     */
+    getMaintenanceForTenant(maintenanceID, tenantID) {
+        const tenantList = this.maintenanceListByTenant[tenantID];
+        if (tenantList && tenantList[maintenanceID]) {
+            return tenantList[maintenanceID];
+        }
+        return null;
+    }
+
+    /**
      * Write error to log file
      * @param {any} error The error to write
      * @param {boolean} outputToConsole Should the error also be output to console?
