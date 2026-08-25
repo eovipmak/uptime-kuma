@@ -1,4 +1,7 @@
 const { checkLogin, setSetting, setting, doubleCheckPassword } = require("../util-server");
+// G3 task-14: RBAC enforcement (see per-event annotations below)
+const { checkPermission } = require("../rbac/socket-rbac");
+const { PERMISSIONS } = require("../rbac/permissions");
 // G2 task-11: tenant-partitioned room keys for user-scoped emits
 const { userRoom } = require("./tenant-room");
 const { CloudflaredTunnel } = require("node-cloudflared-tunnel");
@@ -38,6 +41,9 @@ module.exports.cloudflaredSocketHandler = (socket) => {
     socket.on(prefix + "join", async () => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed) — room subscription that
+            // only re-emits current tunnel state to the caller's own rooms.
+
             socket.join("cloudflared");
             io.to(userRoom(socket.tenantID, socket.userID)).emit(prefix + "installed", cloudflared.checkInstalled());
             io.to(userRoom(socket.tenantID, socket.userID)).emit(prefix + "running", cloudflared.running);
@@ -50,6 +56,8 @@ module.exports.cloudflaredSocketHandler = (socket) => {
     socket.on(prefix + "leave", async () => {
         try {
             checkLogin(socket);
+            // RBAC: read, viewer+ OK (no check needed) — room unsubscription only.
+
             socket.leave("cloudflared");
         } catch (error) {
             log.error("cloudflared", "Error in leave handler: " + error.message);
@@ -59,6 +67,12 @@ module.exports.cloudflaredSocketHandler = (socket) => {
     socket.on(prefix + "start", async (token) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — cloudflared tunnel control. Task-14 item 7:
+            // no dedicated permission exists in the frozen task-13 enum, so
+            // tenant-operational mutations gate on TENANT_SETTINGS_UPDATE
+            // (tenant_admin). Raise an RFC if a finer-grained permission is needed.
+            checkPermission(socket, PERMISSIONS.TENANT_SETTINGS_UPDATE);
+
             if (token && typeof token === "string") {
                 await setSetting("cloudflaredTunnelToken", token);
                 cloudflared.token = token;
@@ -74,6 +88,11 @@ module.exports.cloudflaredSocketHandler = (socket) => {
     socket.on(prefix + "stop", async (currentPassword, callback) => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — cloudflared tunnel control, gated per
+            // task-14 item 7 (TENANT_SETTINGS_UPDATE; see "start" annotation).
+            // The doubleCheckPassword below stays intact next to the RBAC check.
+            checkPermission(socket, PERMISSIONS.TENANT_SETTINGS_UPDATE);
+
             const disabledAuth = await setting("disableAuth");
             if (!disabledAuth) {
                 await doubleCheckPassword(socket, currentPassword);
@@ -90,6 +109,10 @@ module.exports.cloudflaredSocketHandler = (socket) => {
     socket.on(prefix + "removeToken", async () => {
         try {
             checkLogin(socket);
+            // G3 task-14: mutation — clears the stored tunnel token, gated per
+            // task-14 item 7 (TENANT_SETTINGS_UPDATE; see "start" annotation).
+            checkPermission(socket, PERMISSIONS.TENANT_SETTINGS_UPDATE);
+
             await setSetting("cloudflaredTunnelToken", "");
         } catch (error) {
             log.error("cloudflared", "Error in removeToken handler: " + error.message);

@@ -136,6 +136,11 @@ const {
     printServerUrls,
 } = require("./util-server");
 
+// G3 task-14: socket-handler RBAC enforcement sweep (see per-event
+// annotations below). Helpers from task-13; PERMISSIONS is the frozen enum.
+const { checkPermission } = require("./rbac/socket-rbac");
+const { PERMISSIONS } = require("./rbac/permissions");
+
 log.debug("server", "Importing Notification");
 const { Notification } = require("./notification");
 Notification.init();
@@ -448,6 +453,9 @@ let needSetup = false;
         // ***************************
 
         socket.on("loginByToken", async (token, callback) => {
+            // RBAC: deliberately not gated (self-service) — this is the flow
+            // that ESTABLISHES socket.role (G2 task-09); it runs before any
+            // role exists. checkLogin is the only assertion downstream.
             const clientIP = await server.getClientIP(socket);
 
             log.info("auth", `Login by token. IP=${clientIP}`);
@@ -530,6 +538,8 @@ let needSetup = false;
         });
 
         socket.on("login", async (data, callback) => {
+            // RBAC: deliberately not gated (self-service) — establishes the
+            // session + socket.role; runs before any role exists.
             const clientIP = await server.getClientIP(socket);
 
             log.info("auth", `Login by username + password. IP=${clientIP}`);
@@ -642,6 +652,9 @@ let needSetup = false;
         });
 
         socket.on("logout", async (callback) => {
+            // RBAC: deliberately not gated (self-service) — ends the caller's
+            // own session only; equivalent to closing the tab.
+
             // Rate Limit
             if (!(await loginRateLimiter.pass(callback))) {
                 return;
@@ -659,6 +672,10 @@ let needSetup = false;
         });
 
         socket.on("switchTenant", async (targetTenant, callback) => {
+            // RBAC: deliberately not gated — switching is a user-level action
+            // open to ALL roles including VIEWER (task-14 item 11); the real
+            // gate is membership, re-validated below via getMembershipRole.
+
             // G2 task-11: switch the session's active tenant. The requested
             // reference (numeric id or slug) is resolved and membership
             // re-validated server-side via task-10's shared resolver exports
@@ -744,6 +761,9 @@ let needSetup = false;
                 }
 
                 checkLogin(socket);
+                // RBAC: deliberately not gated (self-service) — the user
+                // manages their OWN 2FA secret (task-14 item 10); ownership is
+                // enforced by socket.userID below.
                 await doubleCheckPassword(socket, currentPassword);
 
                 let user = await R.findOne("user", " id = ? AND active = 1 ", [socket.userID]);
@@ -789,6 +809,8 @@ let needSetup = false;
                 }
 
                 checkLogin(socket);
+                // RBAC: deliberately not gated (self-service) — enables 2FA on
+                // the caller's own account only (see prepare2FA annotation).
                 await doubleCheckPassword(socket, currentPassword);
 
                 await R.exec("UPDATE `user` SET twofa_status = 1 WHERE id = ? ", [socket.userID]);
@@ -819,6 +841,8 @@ let needSetup = false;
                 }
 
                 checkLogin(socket);
+                // RBAC: deliberately not gated (self-service) — disables 2FA on
+                // the caller's own account only (see prepare2FA annotation).
                 await doubleCheckPassword(socket, currentPassword);
                 await TwoFA.disable2FA(socket.userID);
 
@@ -842,6 +866,9 @@ let needSetup = false;
         socket.on("verifyToken", async (token, currentPassword, callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: deliberately not gated (self-service) — verifies a TOTP
+                // against the caller's own 2FA secret (see prepare2FA
+                // annotation).
                 await doubleCheckPassword(socket, currentPassword);
 
                 let user = await R.findOne("user", " id = ? AND active = 1 ", [socket.userID]);
@@ -872,6 +899,8 @@ let needSetup = false;
         socket.on("twoFAStatus", async (callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read + self-service — reports the caller's own 2FA
+                // status; deliberately not gated.
 
                 let user = await R.findOne("user", " id = ? AND active = 1 ", [socket.userID]);
 
@@ -895,10 +924,15 @@ let needSetup = false;
         });
 
         socket.on("needSetup", async (callback) => {
+            // RBAC: deliberately not gated — pre-auth bootstrap probe used by
+            // the setup flow, before any account/session exists.
             callback(needSetup);
         });
 
         socket.on("setup", async (username, password, callback) => {
+            // RBAC: deliberately not gated — first-run bootstrap that CREATES
+            // the initial default-tenant admin; runs before any role exists.
+
             try {
                 if (passwordStrength(password).value === "Too weak") {
                     throw new TranslatableError("passwordTooWeak");
@@ -946,6 +980,8 @@ let needSetup = false;
         socket.on("add", async (monitor, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — monitor create (member+ per task-13 matrix)
+                checkPermission(socket, PERMISSIONS.MONITOR_CREATE);
                 let bean = R.dispense("monitor");
 
                 let notificationIDList = monitor.notificationIDList;
@@ -1026,6 +1062,8 @@ let needSetup = false;
             try {
                 let removeGroupChildren = false;
                 checkLogin(socket);
+                // G3 task-14: mutation — monitor update (member+ per task-13 matrix)
+                checkPermission(socket, PERMISSIONS.MONITOR_UPDATE);
 
                 let bean = await R.findOne("monitor", " id = ? ", [monitor.id]);
 
@@ -1202,6 +1240,7 @@ let needSetup = false;
         socket.on("getMonitorList", async (callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read, viewer+ OK (no check needed).
                 await server.sendMonitorList(socket);
                 callback({
                     ok: true,
@@ -1218,6 +1257,7 @@ let needSetup = false;
         socket.on("getMonitor", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read, viewer+ OK (no check needed).
 
                 log.info("monitor", `Get Monitor: ${monitorID} User ID: ${socket.userID}`);
 
@@ -1240,6 +1280,9 @@ let needSetup = false;
         socket.on("checkDomain", async (partial, callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read, viewer+ OK (no check needed) — stateless domain
+                // support lookup, no data mutated.
+
                 const DomainExpiry = require("./model/domain_expiry");
                 const supportInfo = await DomainExpiry.checkSupport(partial);
                 callback({
@@ -1260,6 +1303,7 @@ let needSetup = false;
         socket.on("getMonitorBeats", async (monitorID, period, callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read, viewer+ OK (no check needed).
 
                 log.info("monitor", `Get Monitor Beats: ${monitorID} User ID: ${socket.userID}`);
 
@@ -1296,6 +1340,8 @@ let needSetup = false;
         socket.on("resumeMonitor", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — monitor pause/resume is member+ per task-13 matrix
+                checkPermission(socket, PERMISSIONS.MONITOR_PAUSE_RESUME);
                 await startMonitor(socket.userID, monitorID);
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
@@ -1315,6 +1361,8 @@ let needSetup = false;
         socket.on("pauseMonitor", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — monitor pause/resume is member+ per task-13 matrix
+                checkPermission(socket, PERMISSIONS.MONITOR_PAUSE_RESUME);
                 await pauseMonitor(socket.userID, monitorID);
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
@@ -1340,6 +1388,9 @@ let needSetup = false;
                 }
 
                 checkLogin(socket);
+                // G3 task-14: mutation — destructive → MONITOR_DELETE
+                // (tenant_admin per task-13 matrix).
+                checkPermission(socket, PERMISSIONS.MONITOR_DELETE);
 
                 const startTime = Date.now();
 
@@ -1424,6 +1475,7 @@ let needSetup = false;
         socket.on("getTags", async (callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read, viewer+ OK (no check needed).
 
                 const list = await R.findAll("tag");
 
@@ -1442,6 +1494,10 @@ let needSetup = false;
         socket.on("addTag", async (tag, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — tag management is member+ per the
+                // task-13 matrix ("tags are a shared resource used by member
+                // monitors").
+                checkPermission(socket, PERMISSIONS.TAG_MANAGE);
 
                 let bean = R.dispense("tag");
                 bean.name = tag.name;
@@ -1463,6 +1519,8 @@ let needSetup = false;
         socket.on("editTag", async (tag, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — tag management is member+ (TAG_MANAGE).
+                checkPermission(socket, PERMISSIONS.TAG_MANAGE);
 
                 let bean = await R.findOne("tag", " id = ? ", [tag.id]);
                 if (bean == null) {
@@ -1494,6 +1552,8 @@ let needSetup = false;
         socket.on("deleteTag", async (tagID, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — tag management is member+ (TAG_MANAGE).
+                checkPermission(socket, PERMISSIONS.TAG_MANAGE);
 
                 await R.exec("DELETE FROM tag WHERE id = ? ", [tagID]);
 
@@ -1513,6 +1573,9 @@ let needSetup = false;
         socket.on("addMonitorTag", async (tagID, monitorID, value, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — per task-14 item 10 this attribute-add
+                // on monitor tagging is gated as MONITOR_CREATE (member+).
+                checkPermission(socket, PERMISSIONS.MONITOR_CREATE);
 
                 await R.exec("INSERT INTO monitor_tag (tag_id, monitor_id, value) VALUES (?, ?, ?)", [
                     tagID,
@@ -1538,6 +1601,9 @@ let needSetup = false;
         socket.on("editMonitorTag", async (tagID, monitorID, value, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — per task-14 item 10 this attribute-edit
+                // on monitor tagging is gated as MONITOR_CREATE (member+).
+                checkPermission(socket, PERMISSIONS.MONITOR_CREATE);
 
                 await R.exec("UPDATE monitor_tag SET value = ? WHERE tag_id = ? AND monitor_id = ?", [
                     value,
@@ -1563,6 +1629,9 @@ let needSetup = false;
         socket.on("deleteMonitorTag", async (tagID, monitorID, value, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — per task-14 item 10 removing a tag from
+                // a monitor is an attribute-edit → MONITOR_UPDATE (member+).
+                checkPermission(socket, PERMISSIONS.MONITOR_UPDATE);
 
                 await R.exec("DELETE FROM monitor_tag WHERE tag_id = ? AND monitor_id = ? AND value = ?", [
                     tagID,
@@ -1588,6 +1657,7 @@ let needSetup = false;
         socket.on("monitorImportantHeartbeatListCount", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read, viewer+ OK (no check needed).
 
                 let count;
                 if (monitorID == null) {
@@ -1611,6 +1681,7 @@ let needSetup = false;
         socket.on("monitorImportantHeartbeatListPaged", async (monitorID, offset, count, callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read, viewer+ OK (no check needed).
 
                 let list;
                 if (monitorID == null) {
@@ -1653,6 +1724,9 @@ let needSetup = false;
         socket.on("changePassword", async (password, callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: deliberately not gated (self-service) — the caller
+                // changes their OWN password; ownership enforced by the
+                // doubleCheckPassword below. Keep that flow intact.
 
                 if (!password.newPassword) {
                     throw new Error("Invalid new password");
@@ -1690,6 +1764,7 @@ let needSetup = false;
         socket.on("getSettings", async (callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read, viewer+ OK (no check needed).
                 const data = await getSettings("general");
 
                 if (!data.serverTimezone) {
@@ -1711,6 +1786,12 @@ let needSetup = false;
         socket.on("setSettings", async (data, currentPassword, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — mutates server-wide settings (entry
+                // page, keep-data-period, disableAuth, ...) →
+                // TENANT_SETTINGS_UPDATE (tenant_admin). The legacy
+                // single-tenant admin is default-tenant tenant_admin (G1), so
+                // this is backward compatible. doubleCheckPassword below stays.
+                checkPermission(socket, PERMISSIONS.TENANT_SETTINGS_UPDATE);
 
                 // If currently is disabled auth, don't need to check
                 // Disabled Auth + Want to Disable Auth => No Check
@@ -1774,6 +1855,10 @@ let needSetup = false;
         socket.on("addNotification", async (notification, notificationID, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — also covers edit (existing
+                // notificationID updates); member+ per task-13 matrix ("manage
+                // their own notifications").
+                checkPermission(socket, PERMISSIONS.NOTIFICATION_CREATE);
 
                 let notificationBean = await Notification.save(notification, notificationID, socket.userID);
                 await sendNotificationList(socket);
@@ -1795,6 +1880,9 @@ let needSetup = false;
         socket.on("deleteNotification", async (notificationID, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation — delete own notification is member+
+                // per task-13 matrix (NOTIFICATION_DELETE).
+                checkPermission(socket, PERMISSIONS.NOTIFICATION_DELETE);
 
                 await Notification.delete(notificationID, socket.userID);
                 await sendNotificationList(socket);
@@ -1815,6 +1903,11 @@ let needSetup = false;
         socket.on("testNotification", async (notification, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: mutation-adjacent — sends a real test message via
+                // the caller-supplied notification config; gated like
+                // addNotification per task-14 item 10 (NOTIFICATION_CREATE,
+                // member+).
+                checkPermission(socket, PERMISSIONS.NOTIFICATION_CREATE);
 
                 let msg = await Notification.send(notification, notification.name + " Testing");
 
@@ -1835,6 +1928,8 @@ let needSetup = false;
         socket.on("checkApprise", async (callback) => {
             try {
                 checkLogin(socket);
+                // RBAC: read, viewer+ OK (no check needed) — reports whether
+                // Apprise is installed.
                 callback(await Notification.checkApprise());
             } catch (e) {
                 callback(false);
@@ -1842,6 +1937,10 @@ let needSetup = false;
         });
 
         socket.on("getWebpushVapidPublicKey", async (callback) => {
+            // RBAC: read — deliberately not gated and no checkLogin here
+            // (pre-existing): the client may need the public VAPID key around
+            // login; first call lazily bootstraps server-level key material,
+            // not a tenant resource. Left exactly as found by this sweep.
             try {
                 let publicVapidKey = await Settings.get("webpushPublicVapidKey");
 
@@ -1870,6 +1969,9 @@ let needSetup = false;
         socket.on("clearEvents", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: destructive mutation — heartbeat-history clearing
+                // maps to MONITOR_DELETE per task-14 item 8 (tenant_admin).
+                checkPermission(socket, PERMISSIONS.MONITOR_DELETE);
 
                 log.info("manage", `Clear Events Monitor: ${monitorID} User ID: ${socket.userID}`);
 
@@ -1889,6 +1991,9 @@ let needSetup = false;
         socket.on("clearHeartbeats", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: destructive mutation — heartbeat-history clearing
+                // maps to MONITOR_DELETE per task-14 item 8 (tenant_admin).
+                checkPermission(socket, PERMISSIONS.MONITOR_DELETE);
 
                 log.info("manage", `Clear Heartbeats Monitor: ${monitorID} User ID: ${socket.userID}`);
 
@@ -1917,6 +2022,10 @@ let needSetup = false;
         socket.on("clearStatistics", async (callback) => {
             try {
                 checkLogin(socket);
+                // G3 task-14: destructive mutation — clears ALL statistics and
+                // restarts monitors → MONITOR_DELETE per task-14 item 8
+                // (tenant_admin).
+                checkPermission(socket, PERMISSIONS.MONITOR_DELETE);
 
                 log.info("manage", `Clear Statistics User ID: ${socket.userID}`);
 
