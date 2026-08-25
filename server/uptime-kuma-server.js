@@ -16,6 +16,11 @@ const axios = require("axios");
 const { isSSL, sslKey, sslCert, sslKeyPassphrase } = require("./config");
 // G2 task-11: tenant-partitioned room keys for user-scoped emits
 const { userRoom } = require("./socket-handlers/tenant-room");
+// G2 task-12: force-logout watchdog for users removed from their tenant
+const {
+    startTenantMembershipCheckJob,
+    stopTenantMembershipCheckJob,
+} = require("./jobs/check-tenant-membership");
 // DO NOT IMPORT HERE IF THE MODULES USED `UptimeKumaServer.getInstance()`, put at the bottom of this file instead.
 
 /**
@@ -56,6 +61,13 @@ class UptimeKumaServer {
      * @type {{}}
      */
     static monitorTypeList = {};
+
+    /**
+     * G2 task-12: token of the running tenant-membership check job
+     * (null when the job is not running).
+     * @type {object|null}
+     */
+    tenantCheckToken = null;
 
     /**
      * Use for decode the auth object
@@ -215,6 +227,15 @@ class UptimeKumaServer {
         log.debug("DEBUG", "Current Time: " + dayjs.tz().format());
 
         await this.loadMaintenanceList();
+
+        // G2 task-12: start the tenant-membership watchdog (force-logout on
+        // removal). Idempotent; ticks are fail-open and tolerate io not being
+        // attached yet. Wrapped so a job failure never blocks server startup.
+        try {
+            this.tenantCheckToken = startTenantMembershipCheckJob(this);
+        } catch (e) {
+            log.error("server", `Failed to start tenant membership check job: ${e.message}`);
+        }
     }
 
     /**
@@ -508,6 +529,16 @@ class UptimeKumaServer {
      * @returns {Promise<void>}
      */
     async stop() {
+        // G2 task-12: stop the force-logout watchdog so no tick fires during
+        // or after shutdown (mid-tick shutdown safety, task-12 lifecycle
+        // contract). Always safe when the job was never started.
+        try {
+            stopTenantMembershipCheckJob(this.tenantCheckToken);
+            this.tenantCheckToken = null;
+        } catch (e) {
+            log.error("server", `Failed to stop tenant membership check job: ${e.message}`);
+        }
+
         let enable = await Settings.get("nscd");
 
         if (enable || enable === null) {
