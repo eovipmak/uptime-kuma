@@ -1165,6 +1165,7 @@
     "authUserInactiveOrDeleted": "The user is inactive or deleted.",
     "authInvalidToken": "Invalid Token.",
     "authIncorrectCreds": "Incorrect username or password.",
+    "authNoTenants": "You do not belong to any tenant. Please contact your administrator.",
     "2faAlreadyEnabled": "2FA is already enabled.",
     "2faEnabled": "2FA Enabled.",
     "2faDisabled": "2FA Disabled.",

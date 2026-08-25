@@ -33,16 +33,25 @@ class User extends BeanModel {
     }
 
     /**
-     * Create a new JWT for a user
+     * Create a new JWT for a user.
+     *
+     * Claim contract frozen by G2 kanban task-09 (CTO ruling 2026-08-25):
+     * `{ username, h, tid, role }`. Later phases may add claims only — never
+     * rename or remove these fields. Signed with the existing server.jwtSecret;
+     * no expiry change in this phase.
      * @param {User} user The User to create a JsonWebToken for
+     * @param {number} tenantId ID of the active tenant for the session (claim `tid`)
+     * @param {string} role The user's role within that tenant (claim `role`, defaults to "viewer")
      * @param {string} jwtSecret The key used to sign the JsonWebToken
      * @returns {string} the JsonWebToken as a string
      */
-    static createJWT(user, jwtSecret) {
+    static createJWT(user, tenantId, role, jwtSecret) {
         return jwt.sign(
             {
                 username: user.username,
                 h: shake256(user.password, SHAKE256_LENGTH),
+                tid: tenantId,
+                role: role || "viewer",
             },
             jwtSecret
         );
