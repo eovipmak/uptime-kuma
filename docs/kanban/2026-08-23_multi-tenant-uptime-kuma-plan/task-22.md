@@ -2,6 +2,7 @@
 
 **Phase:** G5 — Monitoring Engine Multi-Tenant
 **Status:** todo
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Backend engine lead / Uptime Kuma maintainer
 
 ## Objective

@@ -1,7 +1,8 @@
 # Task G2.10 — `resolveTenant()` HTTP Middleware + Tenant Guard
 
 **Phase:** G2 — Authentication & Tenant Context
-**Status:** todo
+**Status:** completed
+**Estimate:** M (per plan template "Format output task chuẩn")
 **Reviewer:** Backend lead / Uptime Kuma maintainer
 
 ## Objective

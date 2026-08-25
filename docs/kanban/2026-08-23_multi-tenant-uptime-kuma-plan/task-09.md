@@ -2,6 +2,7 @@
 
 **Phase:** G2 — Authentication & Tenant Context
 **Status:** completed
+**Estimate:** M (per plan template "Format output task chuẩn")
 **Reviewer:** Auth lead / Uptime Kuma maintainer
 
 ## Objective

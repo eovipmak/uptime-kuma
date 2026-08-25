@@ -2,6 +2,7 @@
 
 **Phase:** G1 — Data Model & Migration
 **Status:** completed
+**Estimate:** M (per plan template "Format output task chuẩn")
 **Reviewer:** Backend lead / Uptime Kuma maintainer
 
 ## Objective

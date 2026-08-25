@@ -1,7 +1,8 @@
 # Task G2.11 — Socket.IO Tenant-Context Wiring + Room Reshaping
 
 **Phase:** G2 — Authentication & Tenant Context
-**Status:** todo
+**Status:** completed
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Realtime lead / Uptime Kuma maintainer
 
 ## Objective

@@ -1,7 +1,8 @@
 # Task G1.07 — Seed Script for 3 Demo Tenants (Dev/Staging Only)
 
 **Phase:** G1 — Data Model & Migration
-**Status:** done
+**Status:** completed
+**Estimate:** M (per plan template "Format output task chuẩn")
 **Reviewer:** Dev-experience lead / Uptime Kuma maintainer
 
 ## Objective

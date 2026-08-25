@@ -1,7 +1,8 @@
 # Task G3.14 — Socket-Handler RBAC Enforcement Sweep
 
 **Phase:** G3 — RBAC (Role-Based Access Control)
-**Status:** todo
+**Status:** completed
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Realtime/socket lead / Uptime Kuma maintainer
 
 ## Objective

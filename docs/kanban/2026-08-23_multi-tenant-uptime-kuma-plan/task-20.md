@@ -2,6 +2,7 @@
 
 **Phase:** G4 — Repository / Query Layer
 **Status:** todo
+**Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Security lead / Uptime Kuma maintainer (G4 closing signoff)
 
 ## Objective
