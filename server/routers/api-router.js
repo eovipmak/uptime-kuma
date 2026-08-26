@@ -168,7 +168,10 @@ router.all("/api/push/:pushToken", async (request, response) => {
         }
 
         // Calculate uptime
-        let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(monitor.id);
+        // G5.21 frozen signature: tenant first; the push-token monitor bean
+        // carries its owning tenant (null for pre-backfill rows resolves
+        // internally).
+        let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(monitor.tenant_id, monitor.id);
         let endTimeDayjs = await uptimeCalculator.update(bean.status, parseFloat(bean.ping));
         bean.end_time = R.isoDateTimeMillis(endTimeDayjs);
 
@@ -210,7 +213,10 @@ router.all("/api/push/:pushToken", async (request, response) => {
             io.to(userRoom(pushTenantID, monitor.user_id)).emit("heartbeat", bean.toJSON());
         }
 
-        Monitor.sendStats(io, monitor.id, monitor.user_id);
+        // G5.21 frozen signature: tenant first. The push bean carries its
+        // own tenant_id (null for pre-backfill rows — sendStats then routes
+        // via the owner's primary tenant).
+        Monitor.sendStats(io, monitor.tenant_id, monitor.id, monitor.user_id);
 
         try {
             new Prometheus(monitor, await monitor.getTags()).update(bean, undefined);
@@ -342,7 +348,9 @@ router.get("/api/badge/:id/uptime/:duration?", cache("5 minutes"), async (reques
             badgeValues.message = "N/A";
             badgeValues.color = badgeConstants.naColor;
         } else {
-            const uptimeCalculator = await UptimeCalculator.getUptimeCalculator(requestedMonitorId);
+            // G5.21 frozen signature: tenant first; public badge path has no
+            // session tenant — resolved internally from the monitor row.
+            const uptimeCalculator = await UptimeCalculator.getUptimeCalculator(null, requestedMonitorId);
             const uptime = overrideValue ?? uptimeCalculator.getDataByDuration(requestedDuration).uptime;
 
             // limit the displayed uptime percentage to four (two, when displayed as percent) decimal digits
@@ -404,7 +412,9 @@ router.get("/api/badge/:id/ping/:duration?", cache("5 minutes"), async (request,
         // Check if monitor is public
         const publicMonitor = await isMonitorPublic(requestedMonitorId);
 
-        const uptimeCalculator = await UptimeCalculator.getUptimeCalculator(requestedMonitorId);
+        // G5.21 frozen signature: tenant first; public badge path has no
+        // session tenant — resolved internally from the monitor row.
+        const uptimeCalculator = await UptimeCalculator.getUptimeCalculator(null, requestedMonitorId);
         const avgPing = uptimeCalculator.getDataByDuration(requestedDuration).avgPing;
 
         const badgeValues = { style };

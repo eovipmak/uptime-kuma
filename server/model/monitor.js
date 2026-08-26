@@ -479,7 +479,7 @@ class Monitor extends BeanModel {
             }
 
             try {
-                if (await Monitor.isUnderMaintenance(this.id)) {
+                if (await Monitor.isUnderMaintenance(this.id, this.tenant_id)) {
                     bean.msg = "Monitor under maintenance";
                     bean.status = MAINTENANCE;
                 } else if (this.type === "http" || this.type === "keyword" || this.type === "json-query") {
@@ -1062,7 +1062,10 @@ class Monitor extends BeanModel {
             }
 
             // Calculate uptime
-            let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(this.id);
+            // G5.21 (kanban task-21): tenant-partitioned calculator registry —
+            // the beat loop owns the loaded bean's tenant; null-tenant rows
+            // (pre-G1 backfill) resolve their owner internally.
+            let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(this.tenant_id, this.id);
             let endTimeDayjs = await uptimeCalculator.update(bean.status, parseFloat(bean.ping));
             bean.end_time = R.isoDateTimeMillis(endTimeDayjs);
 
@@ -1077,7 +1080,8 @@ class Monitor extends BeanModel {
             } else {
                 log.warn("monitor", `[${this.name}] No tenant context for user ${this.user_id}; skipping live heartbeat emit`);
             }
-            Monitor.sendStats(io, this.id, this.user_id);
+            // G5.21 frozen signature: tenant first.
+            Monitor.sendStats(io, this.tenant_id, this.id, this.user_id);
 
             // Store to database
             log.debug("monitor", `[${this.name}] Store`);
@@ -1233,6 +1237,12 @@ class Monitor extends BeanModel {
         this.isStop = true;
 
         this.prometheus?.remove();
+
+        // G5.21 (kanban task-21): drop this monitor's tenant-partitioned
+        // calculator so paused/deleted monitors don't accumulate entries in
+        // listByTenant. Recreated lazily (and reloaded from the stat tables)
+        // on the next start.
+        await UptimeCalculator.remove(this.tenant_id, this.id);
     }
 
     /**
@@ -1330,30 +1340,26 @@ class Monitor extends BeanModel {
 
     /**
      * Send statistics to clients
+     * (G5.21 kanban task-21 frozen signature: tenant first — consumed by G5.22/G5.23).
      * @param {Server} io Socket server instance
+     * @param {number|null} tenantId Tenant owning the monitor (G5.21). The
+     * stats are emitted to the tenant-scoped user room; when null (rows
+     * predating the G1 backfill), the owner's primary tenant stands in so
+     * legacy callers keep delivering until a later phase owns dispatch.
      * @param {number} monitorID ID of monitor to send
      * @param {number} userID ID of user to send to
-     * @returns {void}
-     */
-    /**
-     * Send statistics to clients
-     * @param {Server} io Socket server instance
-     * @param {number} monitorID ID of monitor to send
-     * @param {number} userID ID of user to send to
-     * @param {number|null} tenantID Active tenant of the user (G2 task-11).
-     * When omitted, falls back to the user's primary tenant so legacy callers
-     * keep delivering until G5 owns dispatch.
      * @returns {Promise<void>}
      */
-    static async sendStats(io, monitorID, userID, tenantID = null) {
-        const roomTenantID = (tenantID !== null && tenantID !== undefined) ? tenantID : await TenantUser.getPrimaryTenantID(userID);
+    static async sendStats(io, tenantId, monitorID, userID) {
+        const roomTenantID = (tenantId !== null && tenantId !== undefined) ? tenantId : await TenantUser.getPrimaryTenantID(userID);
         if (!roomTenantID) {
             log.debug("monitor", `No tenant context for user ${userID}; skipping stats`);
             return;
         }
         const roomKey = userRoom(roomTenantID, userID);
         const hasClients = getTotalClientInRoom(io, roomKey) > 0;
-        let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(monitorID);
+        // Null-tenant rows resolve their owning tenant inside the registry.
+        let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(tenantId, monitorID);
 
         if (hasClients) {
             // Send 24 hour average ping
@@ -1372,10 +1378,10 @@ class Monitor extends BeanModel {
             io.to(roomKey).emit("uptime", monitorID, "1y", data1y.uptime);
 
             // Send Cert Info
-            await Monitor.sendCertInfo(io, monitorID, userID, roomTenantID);
+            await Monitor.sendCertInfo(io, roomTenantID, monitorID, userID);
 
             // Send domain info
-            await Monitor.sendDomainInfo(io, monitorID, userID, roomTenantID);
+            await Monitor.sendDomainInfo(io, roomTenantID, monitorID, userID);
         } else {
             log.debug("monitor", "No clients in the room, no need to send stats");
         }
@@ -1383,16 +1389,17 @@ class Monitor extends BeanModel {
 
     /**
      * Send certificate information to client
+     * (G5.21 kanban task-21 frozen signature: tenant first).
      * @param {Server} io Socket server instance
+     * @param {number|null} tenantId Active tenant of the user (G2 task-11);
+     * G4.19 scopes the underlying read: the monitor must belong to this tenant.
+     * When null, falls back to the seeded default tenant (legacy path).
      * @param {number} monitorID ID of monitor to send
      * @param {number} userID ID of user to send to
-     * @param {number|null} tenantID Active tenant of the user (G2 task-11);
-     * G4.19 scopes the underlying read: the monitor must belong to this tenant.
-     * When omitted, falls back to the seeded default tenant (legacy path).
      * @returns {Promise<void>}
      */
-    static async sendCertInfo(io, monitorID, userID, tenantID) {
-        const scopedTenantId = await resolveTenantId(tenantID, "Monitor.sendCertInfo");
+    static async sendCertInfo(io, tenantId, monitorID, userID) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Monitor.sendCertInfo");
 
         // Tenant guard (G4.19): only emit cert info when the monitor is visible
         // to this tenant; otherwise emit nothing (fail closed).
@@ -1405,28 +1412,30 @@ class Monitor extends BeanModel {
         // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_tls_info is FK-anchored to monitor; tenancy verified via findOneForTenant above
         let tlsInfo = await R.findOne("monitor_tls_info", "monitor_id = ?", [monitorID]);
         if (tlsInfo != null) {
-            io.to(userRoom(tenantID, userID)).emit("certInfo", monitorID, tlsInfo.info_json);
+            io.to(userRoom(scopedTenantId, userID)).emit("certInfo", monitorID, tlsInfo.info_json);
         }
     }
 
     /**
      * Send domain name information to client
+     * (G5.21 kanban task-21 frozen signature: tenant first).
      * @param {Server} io Socket server instance
+     * @param {number|null} tenantId Active tenant of the user (G2 task-11);
+     * G4.19 scopes the underlying read to this tenant (fail closed).
+     * When null, falls back to the seeded default tenant (legacy path).
      * @param {number} monitorID ID of monitor to send
      * @param {number} userID ID of user to send to
-     * @param {number|null} tenantID Active tenant of the user (G2 task-11);
-     * G4.19 scopes the underlying read to this tenant (fail closed).
      * @returns {Promise<void>}
      */
-    static async sendDomainInfo(io, monitorID, userID, tenantID) {
-        const scopedTenantId = await resolveTenantId(tenantID, "Monitor.sendDomainInfo");
+    static async sendDomainInfo(io, tenantId, monitorID, userID) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Monitor.sendDomainInfo");
         const monitor = await findOneForTenant("monitor", "id = ?", [monitorID], scopedTenantId);
 
         try {
             const supportInfo = await DomainExpiry.checkSupport(monitor);
             const domain = await DomainExpiry.findByDomainNameOrCreate(supportInfo.domain);
             if (domain?.expiry) {
-                io.to(userRoom(tenantID, userID)).emit("domainInfo", monitorID, domain.daysRemaining, new Date(domain.expiry));
+                io.to(userRoom(scopedTenantId, userID)).emit("domainInfo", monitorID, domain.daysRemaining, new Date(domain.expiry));
             }
         } catch (e) {}
     }
@@ -1663,9 +1672,15 @@ class Monitor extends BeanModel {
     /**
      * Check if monitor is under maintenance
      * @param {number} monitorID ID of monitor to check
+     * @param {number|null} tenantId Tenant owning the monitor (G5.21). Optional:
+     * engine callers pass the loaded bean's tenant_id so maintenance beans
+     * are looked up in the right tenant-partitioned bucket. When omitted
+     * (public preload paths without tenant context), the lookup degrades to
+     * the global registry via UptimeKumaServer.getMaintenance's documented
+     * legacy path.
      * @returns {Promise<boolean>} Is the monitor under maintenance
      */
-    static async isUnderMaintenance(monitorID) {
+    static async isUnderMaintenance(monitorID, tenantId = null) {
         const maintenanceIDList = await R.getCol(
             `
             SELECT maintenance_id FROM monitor_maintenance
@@ -1675,7 +1690,12 @@ class Monitor extends BeanModel {
         );
 
         for (const maintenanceID of maintenanceIDList) {
-            const maintenance = await UptimeKumaServer.getInstance().getMaintenance(maintenanceID);
+            // G5.21 frozen signature: getMaintenance(tenantId, maintenanceID);
+            // single-arg form is the legacy default-bucket fallback.
+            const server = UptimeKumaServer.getInstance();
+            const maintenance = tenantId != null
+                ? server.getMaintenance(tenantId, maintenanceID)
+                : server.getMaintenance(maintenanceID);
             if (maintenance && (await maintenance.isUnderMaintenance())) {
                 return true;
             }
@@ -1683,7 +1703,7 @@ class Monitor extends BeanModel {
 
         const parent = await Monitor.getParent(monitorID);
         if (parent != null) {
-            return await Monitor.isUnderMaintenance(parent.id);
+            return await Monitor.isUnderMaintenance(parent.id, tenantId);
         }
 
         return false;
@@ -2071,14 +2091,19 @@ class Monitor extends BeanModel {
     static async deleteMonitor(monitorID, userID, tenantId = null) {
         const server = UptimeKumaServer.getInstance();
 
-        // Stop the monitor if it's running
-        if (monitorID in server.monitorList) {
-            await server.monitorList[monitorID].stop();
-            delete server.monitorList[monitorID];
+        // G4.19: resolve the effective tenant first so the engine-map lookup
+        // below and the DELETE share one scope.
+        const scopedTenantId = await resolveTenantId(tenantId, "Monitor.deleteMonitor");
+
+        // Stop the monitor if it's running, in THIS tenant's partitioned
+        // engine bucket only (G5.21 kanban task-21) — never a flat map.
+        const tenantMonitorList = server.monitorListByTenant[scopedTenantId];
+        if (tenantMonitorList && monitorID in tenantMonitorList) {
+            await tenantMonitorList[monitorID].stop();
+            delete tenantMonitorList[monitorID];
         }
 
         // Delete from database (tenant + ownership scoped)
-        const scopedTenantId = await resolveTenantId(tenantId, "Monitor.deleteMonitor");
         await execForTenant("DELETE FROM monitor WHERE id = ? AND user_id = ? ", [monitorID, userID], scopedTenantId);
     }
 

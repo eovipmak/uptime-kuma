@@ -15,7 +15,9 @@ module.exports.chartSocketHandler = (socket) => {
                 throw new Error("Invalid period.");
             }
 
-            let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(monitorID);
+            // G5.21 frozen signature: tenant first; chart reads are scoped to
+            // the socket's active tenant.
+            let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(socket.tenantID, monitorID);
 
             let data;
             if (period <= 24) {
