@@ -179,11 +179,17 @@ class Proxy {
 
         let updatedList = await R.getAssoc("SELECT id, proxy_id FROM monitor");
 
-        for (let monitorID in server.monitorList) {
-            let monitor = server.monitorList[monitorID];
+        // KUM-209 (G5.21-followup): iterate every tenant bucket of the
+        // partitioned engine map. The deprecated flat getter only exposes
+        // the default tenant, so non-default tenants' monitors kept a stale
+        // proxy_id after a proxy save/delete until manually restarted.
+        for (const tenantMonitorList of Object.values(server.monitorListByTenant)) {
+            for (let monitorID in tenantMonitorList) {
+                let monitor = tenantMonitorList[monitorID];
 
-            if (updatedList[monitorID]) {
-                monitor.proxy_id = updatedList[monitorID].proxy_id;
+                if (updatedList[monitorID]) {
+                    monitor.proxy_id = updatedList[monitorID].proxy_id;
+                }
             }
         }
     }
