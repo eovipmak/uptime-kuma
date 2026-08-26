@@ -658,6 +658,24 @@ export function intHash(str: string, length = 10): number {
 }
 
 /**
+ * Parse a positive integer from a raw value (e.g. an environment variable
+ * string), falling back when the value is missing, non-numeric or below the
+ * minimum. Used for engine tunables such as
+ * UPTIME_KUMA_MAX_CONCURRENT_TENANT_STARTUP (G5.23).
+ * @param value Raw value to parse (usually a process.env string)
+ * @param fallback Returned when parsing fails or falls below min
+ * @param min Minimum accepted integer (default 1)
+ * @returns {number} The parsed integer (>= min), or the fallback
+ */
+export function parsePositiveInt(value: any, fallback: number, min = 1): number {
+    const parsed = parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed < min) {
+        return fallback;
+    }
+    return parsed;
+}
+
+/**
  * Evaluate a JSON query expression against the provided data.
  * @param data The data to evaluate the JSON query against.
  * @param jsonPath The JSON path or custom JSON query expression.
