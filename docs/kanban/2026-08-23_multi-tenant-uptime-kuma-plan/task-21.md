@@ -1,7 +1,7 @@
 # Task G5.21 — Scheduler Tenant Partitioning (Engine Core Refactor)
 
 **Phase:** G5 — Monitoring Engine Multi-Tenant
-**Status:** todo
+**Status:** completed
 **Estimate:** XL (per plan template "Format output task chuẩn")
 **Reviewer:** Backend engine lead / Uptime Kuma maintainer (G5 entry-point signoff)
 
@@ -208,3 +208,10 @@ Backend engine lead / Uptime Kuma maintainer. Must verify that the tenant-partit
 - **Frontend changes** — G7 owns the UI.
 - **Audit log writes** — G9 owns audit logging.
 - **Billing-tier quotas** — G8 owns billing.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-26T01:07:00Z
+- Verification: PR #52 review — G5.21 scheduler tenant partitioning (engine core refactor) per task-21 checklist. Verified: monitorListByTenant is canonical (server/uptime-kuma-server.js:49 + server/server.js), flat monitorList only in deprecated getter (file:80), startMonitors() iterates tenants via R.find tenant active + findForTenant per tenant with staggered sleep, listByTenant with getUptimeCalculator(tenantId, monitorID) + resolveBucketTenantId + removeAllForTenant, sendStats(io, tenantId, monitorID, userID) + sendCertInfo/sendDomainInfo tenant-first, startMonitor/pauseMonitor/restartMonitor(tenantId, userID, monitorID) bucket-scoped, shutdownFunction iterates all buckets, afterLogin emits via tenant bucket. Lint 0 errors (136 warnings pre-existing), tsc clean, CI green on PR #52 (Lint, tsc, build Node20 pass 1m21s). Master baseline failures byte-identical (D-016 container tests excluded); IDOR+maintenance suites 43/43 per PR description. Scope deviation: api-router/status-page/chart-socket migrated to satisfy frozen signatures (3 extra files, flagged, verified).
+- Commit or artifact reference: PR #52 squash merge 82e05cf0 (feat G5.21). Branch feat/g5-21-engine-tenant-partitioning commit 2e217a3b. Phase G5 wave-1 done, unblocks G5.22 (KUM-207) and G5.23 (KUM-208).
