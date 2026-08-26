@@ -50,7 +50,7 @@ const clearOldData = async () => {
         try {
             // The tenant registry itself is global by definition.
             // eslint-disable-next-line uptime-kuma/require-tenant-scope -- iterating tenants IS the scoping mechanism here
-            const tenants = await R.findAll("tenant", " status = 'active' ");
+            const tenants = await R.find("tenant", " status = 'active' ");
 
             if (tenants.length === 0) {
                 // Legacy single-tenant fallback: no tenants seeded, keep the
