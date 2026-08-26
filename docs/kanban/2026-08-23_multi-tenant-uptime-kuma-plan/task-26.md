@@ -209,10 +209,12 @@ This task **closes Phase G6**.
       - Assert the response includes validation results.
       - Assert `status_page_cname` table has the validated domains.
 
-   k. **Default tenant backward-compat test:**
+   k. **Default tenant backward-compat test (both fallback directions, per G6.24 frozen contract):**
       - Login as default-tenant admin.
       - Request `GET /status/default`. Assert response 200 (legacy behavior preserved).
       - Request `GET /status/default/rss`. Assert response 200.
+      - **Match-but-miss fallback pin:** request `GET /status/<slug-only-default-has>` with `Host: acme.status.example.com` where Acme has no published page for that slug. Assert response 200 and the body is the **default tenant's** page — strategy 5 fires after a host-derived strategy matches-but-misses.
+      - Same expectation for a custom-domain host whose `status_page_cname` row was deleted: `GET /status/<default-only-slug>` with that host renders the default tenant's page.
 
    l. **Incident history cross-tenant test:**
       - Login as tenant Acme. Create a status page. Create an incident.

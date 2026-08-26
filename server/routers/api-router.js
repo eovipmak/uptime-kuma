@@ -54,7 +54,10 @@ router.get("/api/entry-page", async (request, response) => {
 
     if (hostname in StatusPage.domainMappingList) {
         result.type = "statusPageMatchedDomain";
-        result.statusPageSlug = StatusPage.domainMappingList[hostname];
+        // G6.24: mapping values are now { tenantId, slug }; keep the wire
+        // format a plain slug string for the SPA bootstrap (frontend owns any
+        // richer contract later).
+        result.statusPageSlug = StatusPage.domainMappingList[hostname].slug;
     } else {
         result.type = "entryPage";
         result.entryPage = server.entryPage;

@@ -27,7 +27,9 @@ const {
 
 class StatusPage extends BeanModel {
     /**
-     * Like this: { "test-uptime.kuma.pet": "default" }
+     * Domain → status page mapping, like:
+     * { "test-uptime.kuma.pet": { tenantId: 1, slug: "default" } }
+     * Built by loadDomainMappingList() (G6.24 tenant-aware shape).
      * @type {{}}
      */
     static domainMappingList = {};
@@ -37,14 +39,20 @@ class StatusPage extends BeanModel {
      * @param {Response} response Response object
      * @param {string} slug Status page slug
      * @param {Request} request Request object
+     * @param {number} tenantId Tenant the page must belong to (G6.24, resolved
+     * by resolveStatusPageTenant middleware)
      * @returns {Promise<void>}
      */
-    static async handleStatusPageRSSResponse(response, slug, request) {
-        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- public unauthenticated read; tenant resolved via hostname in G2 router (task-19 exemption contract)
-        let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
+    static async handleStatusPageRSSResponse(response, slug, request, tenantId) {
+        let statusPage = await R.findOne("status_page", " slug = ? AND tenant_id = ? ", [slug, tenantId]);
+
+        if (statusPage && Number(statusPage.tenant_id) !== Number(tenantId)) {
+            // Belt-and-braces: never render a page outside the resolved tenant.
+            statusPage = null;
+        }
 
         if (statusPage) {
-            const feedUrl = await StatusPage.buildRSSUrl(slug, request);
+            const feedUrl = await StatusPage.buildRSSUrl(slug, request, tenantId);
             response.type("application/rss+xml");
             response.send(await StatusPage.renderRSS(statusPage, feedUrl));
         } else {
@@ -57,20 +65,26 @@ class StatusPage extends BeanModel {
      * @param {Response} response Response object
      * @param {string} indexHTML HTML to render
      * @param {string} slug Status page slug
+     * @param {number} tenantId Tenant the page must belong to (G6.24, resolved
+     * by resolveStatusPageTenant middleware)
      * @returns {Promise<void>}
      */
-    static async handleStatusPageResponse(response, indexHTML, slug) {
+    static async handleStatusPageResponse(response, indexHTML, slug, tenantId) {
         // Handle url with trailing slash (http://localhost:3001/status/)
         // The slug comes from the route "/status/:slug". If the slug is empty, express converts it to "index.html"
         if (slug === "index.html") {
             slug = "default";
         }
 
-        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- public unauthenticated read; tenant resolved via hostname in G2 router (task-19 exemption contract)
-        let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
+        let statusPage = await R.findOne("status_page", " slug = ? AND tenant_id = ? ", [slug, tenantId]);
+
+        if (statusPage && Number(statusPage.tenant_id) !== Number(tenantId)) {
+            // Belt-and-braces: never render a page outside the resolved tenant.
+            statusPage = null;
+        }
 
         if (statusPage) {
-            response.send(await StatusPage.renderHTML(indexHTML, statusPage));
+            response.send(await StatusPage.renderHTML(indexHTML, statusPage, tenantId));
         } else {
             response.status(404).send(UptimeKumaServer.getInstance().indexHTML);
         }
@@ -129,9 +143,11 @@ class StatusPage extends BeanModel {
      * Build RSS feed URL, handling proxy headers
      * @param {string} slug Status page slug
      * @param {Request} request Express request object
+     * @param {number} tenantId Tenant owning the page (G6.24; reserved for
+     * task-25 tenant-aware feed branding/links — not used yet)
      * @returns {Promise<string>} The full URL for the RSS feed
      */
-    static async buildRSSUrl(slug, request) {
+    static async buildRSSUrl(slug, request, tenantId = null) {
         if (request) {
             const trustProxy = await setting("trustProxy");
 
@@ -161,9 +177,12 @@ class StatusPage extends BeanModel {
      * SSR for status pages
      * @param {string} indexHTML HTML page to render
      * @param {StatusPage} statusPage Status page populate HTML with
+     * @param {number} tenantId Tenant owning the page (G6.24; reserved for
+     * task-25 tenant-specific branding injection — not used yet)
      * @returns {Promise<string>} the rendered html
      */
-    static async renderHTML(indexHTML, statusPage) {
+    static async renderHTML(indexHTML, statusPage, tenantId = null) {
+        void tenantId; // G6.24 passes it through; task-25 injects tenant branding.
         const $ = cheerio.load(indexHTML);
 
         const description155 = marked(statusPage.description ?? "")
@@ -354,16 +373,26 @@ class StatusPage extends BeanModel {
     }
 
     /**
-     * Loads domain mapping from DB
-     * Return object like this: { "test-uptime.kuma.pet": "default" }
+     * Loads domain mapping from DB (G6.24 tenant-aware shape).
+     * Return object like this: { "test-uptime.kuma.pet": { tenantId: 1, slug: "default" } }
+     * Only PUBLISHED pages are mapped — public custom-domain routing never
+     * serves drafts.
      * @returns {Promise<void>}
      */
     static async loadDomainMappingList() {
-        StatusPage.domainMappingList = await R.getAssoc(`
-            SELECT domain, slug
-            FROM status_page, status_page_cname
-            WHERE status_page.id = status_page_cname.status_page_id
+        const rows = await R.getAll(`
+            SELECT spc.domain, sp.slug, sp.tenant_id
+            FROM status_page_cname spc
+            JOIN status_page sp ON sp.id = spc.status_page_id
+            WHERE sp.published = 1
         `);
+        StatusPage.domainMappingList = {};
+        for (const row of rows) {
+            StatusPage.domainMappingList[row.domain] = {
+                tenantId: Number(row.tenant_id),
+                slug: row.slug,
+            };
+        }
     }
 
     /**
@@ -434,9 +463,12 @@ class StatusPage extends BeanModel {
     getDomainNameList() {
         let domainList = [];
         for (let domain in StatusPage.domainMappingList) {
+            // G6.24 shape: { tenantId, slug } — a mapping belongs to this page
+            // only when BOTH the slug and the owning tenant match, so tenant A's
+            // editor never sees tenant B's domains for an identically named page.
             let s = StatusPage.domainMappingList[domain];
 
-            if (this.slug === s) {
+            if (s && s.slug === this.slug && Number(s.tenantId) === Number(this.tenant_id)) {
                 domainList.push(domain);
             }
         }
