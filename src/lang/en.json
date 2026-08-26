@@ -698,6 +698,8 @@
     "resolverserverDescription": "Cloudflare is the default server. You can specify a comma delimited list of IP addresses or hostnames.",
     "rrtypeDescription": "Select the RR type you want to monitor",
     "pauseMonitorMsg": "Are you sure want to pause?",
+    "quotaExceeded": "You have reached the maximum number of active monitors allowed for your plan.",
+    "intervalTooLow": "The check interval is below the minimum allowed for your plan.",
     "enableDefaultNotificationDescription": "This notification will be enabled by default for new monitors. You can still disable the notification separately for each monitor.",
     "Clear All Events": "Clear All Events",
     "clearAllEventsMsg": "Are you sure you want to delete all events for all monitors? This permanently removes associated message data and cannot be undone.",

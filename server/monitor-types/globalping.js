@@ -495,7 +495,8 @@ class GlobalpingMonitorType extends MonitorType {
         await R.store(tlsInfoBean);
 
         if (monitor.prometheus) {
-            monitor.prometheus.update(null, certResult);
+            // G5.23: tenant-aware Prometheus update (tenant_id label).
+            monitor.prometheus.update(monitor.tenant_id, null, certResult, null);
         }
 
         if (!monitor.ignoreTls && monitor.expiryNotification) {
