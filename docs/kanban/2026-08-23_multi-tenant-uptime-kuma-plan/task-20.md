@@ -1,7 +1,7 @@
 # Task G4.20 — Cross-Tenant IDOR Test Suite + Cache-Key Namespace Adoption
 
 **Phase:** G4 — Repository / Query Layer
-**Status:** todo
+**Status:** completed
 **Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Security lead / Uptime Kuma maintainer (G4 closing signoff)
 
@@ -135,3 +135,10 @@ Only after reviewer signoff, append the coordinator-status block and close Phase
 - **Do not** change the wrapper (`task-17`), the rule, or the cache namespace shape — those are frozen by 17.
 - **Do not** re-thread `task-18` or `task-19` to use the audit-trail variant of the wrapper — that's a G9 mechanical update. G4 ships only the plain `findOneForTenant`/`findForTenant`/`execForTenant`/`dispenseForTenant` variants on the data path; the audited variant is for G9.
 - **Do not** add resource-owner (per-user-within-tenant) tests — G3's matrix + G4's tenant filter are the two layers; ownership is a non-goal of the plan (the plan's "Member quản lý notification của mình" is enforced socially via the `user_id` filter remaining alongside `tenant_id`, not via a separate role check).
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-26T00:30:00Z
+- Verification: PR #51 review — G4.20 IDOR suite + cache-key namespace adoption per task-20 checklist (a)-(f). Verified: test/backend-test/test-tenant-idor.js 38/38 pass 0 fail (node --test), cache-key audit suite 2/2 pass, grep for hand-written "monitor:/stat:/badge:" keys shows only tenantCacheKey or global-metric annotated paths, all 9 tenant-owned domains have read+mutate IDOR cases (monitor 12-event matrix, notification, status_page, tag, maintenance, proxy, docker_host, remote_browser, api_key), public-status-page anonymous flow positive test passes, default-tenant backward compat 2/2 pass. G4.21 hardening (5ab34eee) threaded socket.tenantID into 8 missed model call sites, now un-skipped in IDOR suite (previous 6 skips resolved). Lint clean on IDOR file, tsc clean. Backend suite failure set identical to baseline (pre-existing env failures only).
+- Commit or artifact reference: PR #51 squash merge 854b0f20 (feat G4.20 + fix G4.21). Branch feat/g4-20-idor-suite commits 945dc00d, 6bab83fa, 4d65155c, df40b74a, f2ed8b13 squash-merged. Phase G4 Definition of Done met.
