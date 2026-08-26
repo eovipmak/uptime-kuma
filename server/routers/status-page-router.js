@@ -8,6 +8,9 @@ const { badgeConstants } = require("../../src/util");
 const { makeBadge } = require("badge-maker");
 const { UptimeCalculator } = require("../uptime-calculator");
 const { resolveTenant } = require("../middleware");
+// G6.24 — per-route status page tenant resolution (frozen contract):
+// attaches request.statusPageTenant = { tenantId, slug } before any handler runs.
+const { resolveStatusPageTenant } = require("../middleware/status-page-tenant");
 
 let router = express.Router();
 
@@ -29,42 +32,45 @@ router.use(resolveTenant());
 let cache = apicache.middleware;
 const server = UptimeKumaServer.getInstance();
 
+// G6.24 — every route below mounts resolveStatusPageTenant BEFORE apicache:
+// resolution must happen first so the cache key can be namespaced by the
+// resolved tenant (appendKey in server/modules/apicache/index.js). Without it,
+// two tenants serving the same URL path under different Host headers would
+// read each other's cached responses.
+
 // RBAC: public, no auth
-router.get("/status/:slug", cache("5 minutes"), async (request, response) => {
-    let slug = request.params.slug;
-    slug = slug.toLowerCase();
-    await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug);
+router.get("/status/:slug", resolveStatusPageTenant, cache("5 minutes"), async (request, response) => {
+    const { tenantId, slug } = request.statusPageTenant;
+    await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug, tenantId);
 });
 
 // RBAC: public, no auth
-router.get("/status/:slug/rss", cache("5 minutes"), async (request, response) => {
-    let slug = request.params.slug;
-    slug = slug.toLowerCase();
-    await StatusPage.handleStatusPageRSSResponse(response, slug, request);
+router.get("/status/:slug/rss", resolveStatusPageTenant, cache("5 minutes"), async (request, response) => {
+    const { tenantId, slug } = request.statusPageTenant;
+    await StatusPage.handleStatusPageRSSResponse(response, slug, request, tenantId);
 });
 
 // RBAC: public, no auth
-router.get("/status", cache("5 minutes"), async (request, response) => {
-    let slug = "default";
-    await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug);
+router.get("/status", resolveStatusPageTenant, cache("5 minutes"), async (request, response) => {
+    const { tenantId, slug } = request.statusPageTenant;
+    await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug, tenantId);
 });
 
 // RBAC: public, no auth
-router.get("/status-page", cache("5 minutes"), async (request, response) => {
-    let slug = "default";
-    await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug);
+router.get("/status-page", resolveStatusPageTenant, cache("5 minutes"), async (request, response) => {
+    const { tenantId, slug } = request.statusPageTenant;
+    await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug, tenantId);
 });
 
 // Status page config, incident, monitor list
 // RBAC: public, no auth — published status page data for anonymous viewers
-router.get("/api/status-page/:slug", cache("5 minutes"), async (request, response) => {
+router.get("/api/status-page/:slug", resolveStatusPageTenant, cache("5 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
-    let slug = request.params.slug;
-    slug = slug.toLowerCase();
+    const { tenantId, slug } = request.statusPageTenant;
 
     try {
-        // Get Status Page
-        let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
+        // Get Status Page — scoped to the resolved tenant, published only
+        let statusPage = await R.findOne("status_page", " tenant_id = ? AND slug = ? AND published = 1 ", [tenantId, slug]);
 
         if (!statusPage) {
             sendHttpError(response, "Status Page Not Found");
@@ -83,16 +89,23 @@ router.get("/api/status-page/:slug", cache("5 minutes"), async (request, respons
 // Status Page Polling Data
 // Can fetch only if published
 // RBAC: public, no auth — published status page data for anonymous viewers
-router.get("/api/status-page/heartbeat/:slug", cache("1 minutes"), async (request, response) => {
+router.get("/api/status-page/heartbeat/:slug", resolveStatusPageTenant, cache("1 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
+    const { tenantId, slug } = request.statusPageTenant;
 
     try {
         let heartbeatList = {};
         let uptimeList = {};
 
-        let slug = request.params.slug;
-        slug = slug.toLowerCase();
-        let statusPageID = await StatusPage.slugToID(slug);
+        // G6.24 — resolve the page inside the resolved tenant (replaces the
+        // global slugToID lookup; task-25 owns scoping the queries below).
+        let statusPage = await R.findOne("status_page", " tenant_id = ? AND slug = ? AND published = 1 ", [tenantId, slug]);
+        let statusPageID = statusPage ? statusPage.id : null;
+
+        if (!statusPageID) {
+            sendHttpError(response, "Status Page Not Found");
+            return;
+        }
 
         let monitorIDList = await R.getCol(
             `
@@ -136,14 +149,13 @@ router.get("/api/status-page/heartbeat/:slug", cache("1 minutes"), async (reques
 
 // Status page's manifest.json
 // RBAC: public, no auth
-router.get("/api/status-page/:slug/manifest.json", cache("1440 minutes"), async (request, response) => {
+router.get("/api/status-page/:slug/manifest.json", resolveStatusPageTenant, cache("1440 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
-    let slug = request.params.slug;
-    slug = slug.toLowerCase();
+    const { tenantId, slug } = request.statusPageTenant;
 
     try {
-        // Get Status Page
-        let statusPage = await R.findOne("status_page", " slug = ? ", [slug]);
+        // Get Status Page — scoped to the resolved tenant, published only
+        let statusPage = await R.findOne("status_page", " tenant_id = ? AND slug = ? AND published = 1 ", [tenantId, slug]);
 
         if (!statusPage) {
             sendHttpError(response, "Not Found");
@@ -169,13 +181,15 @@ router.get("/api/status-page/:slug/manifest.json", cache("1440 minutes"), async 
 });
 
 // RBAC: public, no auth
-router.get("/api/status-page/:slug/incident-history", cache("5 minutes"), async (request, response) => {
+router.get("/api/status-page/:slug/incident-history", resolveStatusPageTenant, cache("5 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
+    const { tenantId, slug } = request.statusPageTenant;
 
     try {
-        let slug = request.params.slug;
-        slug = slug.toLowerCase();
-        let statusPageID = await StatusPage.slugToID(slug);
+        // G6.24 — resolve the page inside the resolved tenant (replaces the
+        // global slugToID lookup).
+        let statusPage = await R.findOne("status_page", " tenant_id = ? AND slug = ? AND published = 1 ", [tenantId, slug]);
+        let statusPageID = statusPage ? statusPage.id : null;
 
         if (!statusPageID) {
             sendHttpError(response, "Status Page Not Found");
@@ -195,11 +209,16 @@ router.get("/api/status-page/:slug/incident-history", cache("5 minutes"), async 
 
 // overall status-page status badge
 // RBAC: public, no auth
-router.get("/api/status-page/:slug/badge", cache("5 minutes"), async (request, response) => {
+router.get("/api/status-page/:slug/badge", resolveStatusPageTenant, cache("5 minutes"), async (request, response) => {
     allowDevAllOrigin(response);
-    let slug = request.params.slug;
-    slug = slug.toLowerCase();
-    const statusPageID = await StatusPage.slugToID(slug);
+    const { tenantId, slug } = request.statusPageTenant;
+
+    // G6.24 — resolve the page inside the resolved tenant (replaces the
+    // global slugToID lookup). An unknown/unpublished page keeps rendering an
+    // N/A badge instead of a 404: badges are embedded via <img> tags.
+    let statusPage = await R.findOne("status_page", " tenant_id = ? AND slug = ? AND published = 1 ", [tenantId, slug]);
+    const statusPageID = statusPage ? statusPage.id : null;
+
     const {
         label,
         upColor = badgeConstants.defaultUpColor,

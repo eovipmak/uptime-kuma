@@ -290,11 +290,13 @@ let needSetup = false;
         log.debug("entry", `Request Domain: ${hostname}`);
 
         const uptimeKumaEntryPage = server.entryPage;
-        if (hostname in StatusPage.domainMappingList) {
+        // G6.24: domainMappingList values are now { tenantId, slug } — pass
+        // both to the handler so the page renders inside the mapped tenant.
+        const domainInfo = StatusPage.domainMappingList[hostname];
+        if (domainInfo) {
             log.debug("entry", "This is a status page domain");
 
-            let slug = StatusPage.domainMappingList[hostname];
-            await StatusPage.handleStatusPageResponse(response, server.indexHTML, slug);
+            await StatusPage.handleStatusPageResponse(response, server.indexHTML, domainInfo.slug, domainInfo.tenantId);
         } else if (uptimeKumaEntryPage && uptimeKumaEntryPage.startsWith("statusPage-")) {
             response.redirect("/status/" + uptimeKumaEntryPage.replace("statusPage-", ""));
         } else {
