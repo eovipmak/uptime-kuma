@@ -118,7 +118,10 @@ router.get("/api/status-page/heartbeat/:slug", cache("1 minutes"), async (reques
             list = R.convertToBeans("heartbeat", list);
             heartbeatList[monitorID] = list.reverse().map((row) => row.toPublicJSON());
 
-            const uptimeCalculator = await UptimeCalculator.getUptimeCalculator(monitorID);
+            // G5.21 frozen signature: tenant first. Public polling path has
+            // no session tenant — the calculator resolves the monitor's
+            // owning tenant internally (memoized task-20 lookup).
+            const uptimeCalculator = await UptimeCalculator.getUptimeCalculator(null, monitorID);
             uptimeList[`${monitorID}_24`] = uptimeCalculator.get24Hour().uptime;
         }
 

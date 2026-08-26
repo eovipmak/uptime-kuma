@@ -1,8 +1,6 @@
 const dayjs = require("dayjs");
 const { UP, MAINTENANCE, DOWN, PENDING, log } = require("../src/util");
 const { LimitQueue } = require("./utils/limit-queue");
-// G4.20 (KUM-36): adopt the tenant cache-key namespace contract from G4.17
-const { tenantCacheKey } = require("./repository/cache-namespace");
 const { R } = require("redbean-node");
 
 /**
@@ -10,15 +8,31 @@ const { R } = require("redbean-node");
  */
 class UptimeCalculator {
     /**
+     * Tenant-partitioned calculator registry (G5.21, kanban task-21).
+     * Shape: listByTenant[tenantId][monitorID] = UptimeCalculator. Object
+     * property keys are strings, so numeric tenant ids are stored under their
+     * string form; UNSCOPED_TENANT_BUCKET cannot collide with them because
+     * real tenant ids are numeric.
      * @private
-     * @type {{string:UptimeCalculator}}
+     * @type {{[tenantId: number]: {[monitorID: number]: UptimeCalculator}}}
      */
-    static list = {};
+    static listByTenant = {};
 
     /**
-     * Memoized monitorID → tenant_id map for cache-key namespacing (G4.20).
-     * Populated once per monitor via a single-column lookup; ids are never
-     * reused so entries cannot go stale within a process.
+     * Bucket for calculators whose owning monitor predates the G4 tenant
+     * backfill (tenant_id NULL). Mirrors the documented task-20 exemption:
+     * these entries keep working, but loudly, and they are invisible to
+     * per-tenant enumeration (removeAllForTenant) by design.
+     * @private
+     * @type {string}
+     */
+    static UNSCOPED_TENANT_BUCKET = "unscoped";
+
+    /**
+     * Memoized monitorID → tenant_id map used to resolve a legacy caller's
+     * bucket (G4.20/G5.21). Populated once per monitor via a single-column
+     * lookup; ids are never reused so entries cannot go stale within a
+     * process.
      * @private
      * @type {{number: number}}
      */
@@ -74,85 +88,144 @@ class UptimeCalculator {
     statHourlyKeepDay = 30;
 
     /**
-     * Get the uptime calculator for a monitor
+     * Get the uptime calculator for a monitor (G5.21 frozen contract:
+     * tenant first, per kanban task-21).
      * Initializes and returns the monitor if it does not exist
-     * @param {number} monitorID the id of the monitor
+     * @param {number|null} tenantId Owning tenant of the monitor. A finite
+     * number selects the bucket directly; null/undefined (callers that
+     * predate tenant threading, e.g. public badge/status-page paths) resolves
+     * the owning tenant via the memoized lookup in resolveBucketTenantId().
+     * @param {number} monitorID the id of the monitor. Legacy tolerance:
+     * when omitted (pre-G5 single-argument call form), the first argument is
+     * treated as the monitorID and the owning tenant is resolved internally —
+     * keeps out-of-scope badge/push routes working unchanged.
      * @returns {Promise<UptimeCalculator>} UptimeCalculator
      */
-    static async getUptimeCalculator(monitorID) {
+    static async getUptimeCalculator(tenantId, monitorID) {
+        // G5.21: legacy single-arg form getUptimeCalculator(monitorID) —
+        // shift the argument and resolve the owner below. Without this,
+        // out-of-list callers (api-router badges, /api/push,
+        // status-page-router) would throw "Monitor ID is required".
+        if (monitorID === undefined || monitorID === null) {
+            monitorID = tenantId;
+            tenantId = null;
+        }
+
         if (!monitorID) {
             throw new Error("Monitor ID is required");
         }
 
-        // G4.20: entries are keyed by the tenant-namespaced cache key
-        // (tenant:${tenantId}:monitor:${monitorID}) so the G10 Redis adapter
-        // can adopt this namespace without a key-string sweep. The owning
-        // tenant is resolved once per monitor and cached below.
-        const key = await UptimeCalculator.getCacheKey(monitorID);
+        const bucketTenantId = await UptimeCalculator.resolveBucketTenantId(tenantId, monitorID);
 
-        if (!UptimeCalculator.list[key]) {
-            UptimeCalculator.list[key] = new UptimeCalculator();
-            await UptimeCalculator.list[key].init(monitorID);
+        if (!UptimeCalculator.listByTenant[bucketTenantId]) {
+            UptimeCalculator.listByTenant[bucketTenantId] = {};
         }
-        return UptimeCalculator.list[key];
+
+        if (!UptimeCalculator.listByTenant[bucketTenantId][monitorID]) {
+            let c = new UptimeCalculator();
+            await c.init(monitorID);
+            UptimeCalculator.listByTenant[bucketTenantId][monitorID] = c;
+        }
+        return UptimeCalculator.listByTenant[bucketTenantId][monitorID];
     }
 
     /**
-     * Tenant-resolving cache-key builder (G4.20, KUM-36).
+     * Resolve which listByTenant bucket owns a monitor (G5.21).
      *
-     * Monitor ids are globally unique auto-increment PKs, so the legacy bare
-     * `list[monitorID]` map could never actually collide across tenants — but
-     * hand-writing un-namespaced keys is exactly what the G4.17 contract
-     * retires, because a namespaced key makes cross-tenant cache reads
-     * structurally impossible instead of "impossible by PK semantics".
-     *
-     * This module has no caller tenant context (it is keyed by monitorID from
-     * both socket and public-badge paths), so per task-20 step 3 the owning
-     * tenant is verified with one single-column lookup per monitor lifetime
-     * and memoized; monitor ids are never reused, so the mapping cannot go
-     * stale within a process.
+     * Tenant-aware callers (beat loop, sendStats, socket handlers) pass a
+     * finite tenantId that is used verbatim. Legacy/public callers pass null
+     * and the owning tenant is verified with one single-column lookup per
+     * monitor lifetime and memoized — the same contract as the G4.20 cache
+     * key namespacing this map replaces. Monitor ids are never reused, so the
+     * memo cannot go stale within a process.
+     * @param {number|null} tenantId caller-supplied tenant context
      * @param {number} monitorID the id of the monitor
-     * @returns {Promise<string>} namespaced cache key `tenant:${tenantId}:monitor:${monitorID}`
+     * @returns {Promise<number|string>} bucket key (numeric tenant id, or the
+     * UNSCOPED_TENANT_BUCKET sentinel for pre-backfill rows)
      */
-    static async getCacheKey(monitorID) {
-        let tenantId = UptimeCalculator.monitorTenantMap[monitorID];
-
-        if (tenantId === undefined) {
-            tenantId = await R.getCell("SELECT tenant_id FROM monitor WHERE id = ? ", [ monitorID ]);
-            UptimeCalculator.monitorTenantMap[monitorID] = tenantId;
+    static async resolveBucketTenantId(tenantId, monitorID) {
+        if (typeof tenantId === "number" && Number.isFinite(tenantId)) {
+            return tenantId;
         }
 
-        if (tenantId === null || tenantId === undefined) {
+        let resolved = UptimeCalculator.monitorTenantMap[monitorID];
+
+        if (resolved === undefined) {
+            resolved = await R.getCell("SELECT tenant_id FROM monitor WHERE id = ? ", [ monitorID ]);
+            UptimeCalculator.monitorTenantMap[monitorID] = resolved;
+        }
+
+        if (resolved === null || resolved === undefined) {
             // Documented exemption (task-20 step 3), not a silent bypass: the
             // monitor row is already gone (or predates tenant backfill), so no
-            // tenant scope exists to namespace by. The entry can only have been
-            // created before deletion; keep the legacy bare key so remove()
-            // still finds it.
-            log.warn("uptime-calculator", `getCacheKey: no tenant_id found for monitor ${monitorID}; using unscoped cache key`);
-            return `monitor:${monitorID}`;
+            // tenant scope exists to bucket by. Keep the entry reachable for
+            // remove() via the unscoped sentinel bucket.
+            log.warn("uptime-calculator", `resolveBucketTenantId: no tenant_id found for monitor ${monitorID}; using unscoped bucket`);
+            return UptimeCalculator.UNSCOPED_TENANT_BUCKET;
         }
 
-        return tenantCacheKey(tenantId, `monitor:${monitorID}`);
+        return resolved;
     }
 
     /**
-     * Remove a monitor from the list
-     * @param {number} monitorID the id of the monitor
+     * Remove a monitor from its tenant bucket
+     * @param {number|null} tenantId Owning tenant of the monitor (see
+     * getUptimeCalculator); resolved internally when omitted.
+     * @param {number} monitorID the id of the monitor. Legacy tolerance:
+     * when omitted (pre-G5 single-argument remove(monitorID) call form, e.g.
+     * clearStatistics before its tenantId param existed), the first argument
+     * is treated as the monitorID.
      * @returns {Promise<void>}
      */
-    static async remove(monitorID) {
-        const key = await UptimeCalculator.getCacheKey(monitorID);
-        delete UptimeCalculator.list[key];
+    static async remove(tenantId, monitorID) {
+        // G5.21: legacy single-arg form remove(monitorID) — shift the
+        // argument so the owner is resolved below instead of treating the
+        // monitor id as a tenant bucket key.
+        if (monitorID === undefined || monitorID === null) {
+            monitorID = tenantId;
+            tenantId = null;
+        }
+
+        if (!monitorID) {
+            return;
+        }
+
+        const bucketTenantId = await UptimeCalculator.resolveBucketTenantId(tenantId, monitorID);
+        if (UptimeCalculator.listByTenant[bucketTenantId]) {
+            delete UptimeCalculator.listByTenant[bucketTenantId][monitorID];
+        }
         // ids are never reused; drop the memo too so nothing accumulates
         delete UptimeCalculator.monitorTenantMap[monitorID];
     }
 
     /**
-     * Remove all monitors from the list
+     * Remove every calculator belonging to one tenant (G5.21). Used for
+     * off-boarding a tenant; calculators of other tenants are untouched.
+     * The unscoped (pre-backfill) bucket is deliberately not removable here.
+     * @param {number} tenantId ID of the tenant to clear
+     * @returns {void}
+     * @throws {Error} when tenantId is missing
+     */
+    static removeAllForTenant(tenantId) {
+        if (tenantId === null || tenantId === undefined || tenantId === "") {
+            throw new Error("removeAllForTenant: tenantId is required");
+        }
+        delete UptimeCalculator.listByTenant[tenantId];
+        // Drop the memo entries owned by this tenant so a future re-onboarding
+        // cannot inherit a stale mapping.
+        for (const monitorID of Object.keys(UptimeCalculator.monitorTenantMap)) {
+            if (String(UptimeCalculator.monitorTenantMap[monitorID]) === String(tenantId)) {
+                delete UptimeCalculator.monitorTenantMap[monitorID];
+            }
+        }
+    }
+
+    /**
+     * Remove all monitors from all tenants
      * @returns {Promise<void>}
      */
     static async removeAll() {
-        UptimeCalculator.list = {};
+        UptimeCalculator.listByTenant = {};
         UptimeCalculator.monitorTenantMap = {};
     }
 
@@ -905,16 +978,18 @@ class UptimeCalculator {
     /**
      * Clear all statistics and heartbeats for a monitor
      * @param {number} monitorID the id of the monitor
+     * @param {number|null} tenantId Owning tenant of the monitor (G5.21);
+     * selects the calculator bucket to evict. Resolved internally when omitted.
      * @returns {Promise<void>}
      */
-    static async clearStatistics(monitorID) {
+    static async clearStatistics(monitorID, tenantId = null) {
         await R.exec("DELETE FROM heartbeat WHERE monitor_id = ?", [monitorID]);
 
         await R.exec("DELETE FROM stat_minutely WHERE monitor_id = ?", [monitorID]);
         await R.exec("DELETE FROM stat_hourly WHERE monitor_id = ?", [monitorID]);
         await R.exec("DELETE FROM stat_daily WHERE monitor_id = ?", [monitorID]);
 
-        await UptimeCalculator.remove(monitorID);
+        await UptimeCalculator.remove(tenantId, monitorID);
     }
 
     /**

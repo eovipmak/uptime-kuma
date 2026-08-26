@@ -100,6 +100,7 @@ const { R } = require("redbean-node");
 // G4.18 (KUM-34): tenant-safe query wrappers for the socket-handler data access
 const {
     findOneForTenant,
+    findForTenant,
     findAllForTenant,
     execForTenant,
     dispenseForTenant,
@@ -1069,7 +1070,7 @@ let needSetup = false;
                 await server.sendUpdateMonitorIntoList(socket, bean.id);
 
                 if (monitor.active !== false) {
-                    await startMonitor(socket.userID, bean.id, socket.tenantID);
+                    await startMonitor(socket.tenantID, socket.userID, bean.id);
                 }
 
                 log.info("monitor", `Added Monitor: ${bean.id} User ID: ${socket.userID}`);
@@ -1255,7 +1256,7 @@ let needSetup = false;
                 await updateMonitorNotification(bean.id, monitor.notificationIDList, socket.tenantID);
 
                 if (await Monitor.isActive(bean.id, bean.active)) {
-                    await restartMonitor(socket.userID, bean.id, socket.tenantID);
+                    await restartMonitor(socket.tenantID, socket.userID, bean.id);
                 }
 
                 await server.sendUpdateMonitorIntoList(socket, bean.id);
@@ -1392,7 +1393,7 @@ let needSetup = false;
                 checkLogin(socket);
                 // G3 task-14: mutation — monitor pause/resume is member+ per task-13 matrix
                 checkPermission(socket, PERMISSIONS.MONITOR_PAUSE_RESUME);
-                await startMonitor(socket.userID, monitorID, socket.tenantID);
+                await startMonitor(socket.tenantID, socket.userID, monitorID);
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
                 callback({
@@ -1413,7 +1414,7 @@ let needSetup = false;
                 checkLogin(socket);
                 // G3 task-14: mutation — monitor pause/resume is member+ per task-13 matrix
                 checkPermission(socket, PERMISSIONS.MONITOR_PAUSE_RESUME);
-                await pauseMonitor(socket.userID, monitorID, socket.tenantID);
+                await pauseMonitor(socket.tenantID, socket.userID, monitorID);
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
                 callback({
@@ -2111,12 +2112,17 @@ let needSetup = false;
 
                 log.info("manage", `Clear Heartbeats Monitor: ${monitorID} User ID: ${socket.userID}`);
 
-                await UptimeCalculator.clearStatistics(monitorID);
+                // G5.21 frozen signature: tenant first — evicts this tenant's
+                // calculator bucket entry for the monitor.
+                await UptimeCalculator.clearStatistics(monitorID, socket.tenantID);
 
-                if (monitorID in server.monitorList) {
-                    const monitor = server.monitorList[monitorID];
+                // G5.21: engine map is tenant-partitioned — only this socket's
+                // tenant bucket can hold the running monitor bean.
+                const tenantMonitorList = server.monitorListByTenant[socket.tenantID] || {};
+                if (monitorID in tenantMonitorList) {
+                    const monitor = tenantMonitorList[monitorID];
                     if (monitor.active) {
-                        await restartMonitor(socket.userID, monitorID, socket.tenantID);
+                        await restartMonitor(socket.tenantID, socket.userID, monitorID);
                     }
                 }
 
@@ -2145,11 +2151,14 @@ let needSetup = false;
 
                 await UptimeCalculator.clearAllStatistics();
 
-                // Restart all monitors to reset the stats
-                for (let monitorID in server.monitorList) {
-                    const monitor = server.monitorList[monitorID];
+                // Restart all monitors to reset the stats.
+                // G5.21: iterate only the caller's tenant bucket — clearing
+                // statistics must never restart another tenant's monitors.
+                const tenantMonitorList = server.monitorListByTenant[socket.tenantID] || {};
+                for (let monitorID in tenantMonitorList) {
+                    const monitor = tenantMonitorList[monitorID];
                     if (monitor.active) {
-                        await restartMonitor(socket.userID, monitorID, socket.tenantID);
+                        await restartMonitor(socket.tenantID, socket.userID, monitorID);
                     }
                 }
 
@@ -2364,7 +2373,10 @@ async function emitTenantScopedLists(socket, user) {
     const monitorPromises = [];
     for (let monitorID in monitorList) {
         monitorPromises.push(sendHeartbeatList(socket, monitorID));
-        monitorPromises.push(Monitor.sendStats(io, monitorID, user.id, socket.tenantID));
+        // G5.21 frozen signature: tenant first. The list itself comes from
+        // getMonitorJSONList(socket.tenantID, ...) via sendMonitorList(), so
+        // only this user's monitors of the active tenant are iterated.
+        monitorPromises.push(Monitor.sendStats(io, socket.tenantID, monitorID, user.id));
     }
 
     await Promise.all(monitorPromises);
@@ -2408,12 +2420,13 @@ async function initDatabase(testMode = false) {
 
 /**
  * Start the specified monitor
+ * (G5.21 kanban task-21 frozen signature: tenant first — consumed by G5.22/G5.23).
+ * @param {number} tenantID Active tenant owning the monitor (socket.tenantID)
  * @param {number} userID ID of user who owns monitor
  * @param {number} monitorID ID of monitor to start
- * @param {number} tenantID Active tenant of the calling session (G4.18)
  * @returns {Promise<void>}
  */
-async function startMonitor(userID, monitorID, tenantID) {
+async function startMonitor(tenantID, userID, monitorID) {
     await checkOwner(userID, monitorID, tenantID);
 
     log.info("manage", `Resume Monitor: ${monitorID} User ID: ${userID}`);
@@ -2426,33 +2439,41 @@ async function startMonitor(userID, monitorID, tenantID) {
 
     let monitor = await findOneForTenant("monitor", " id = ? ", [monitorID], tenantID);
 
-    if (monitor.id in server.monitorList) {
-        await server.monitorList[monitor.id].stop();
+    // G5.21: register in the tenant-partitioned engine map, never a flat map.
+    if (!server.monitorListByTenant[tenantID]) {
+        server.monitorListByTenant[tenantID] = {};
+    }
+    const tenantMonitorList = server.monitorListByTenant[tenantID];
+
+    if (monitor.id in tenantMonitorList) {
+        await tenantMonitorList[monitor.id].stop();
     }
 
-    server.monitorList[monitor.id] = monitor;
+    tenantMonitorList[monitor.id] = monitor;
     await monitor.start(io);
 }
 
 /**
  * Restart a given monitor
+ * (G5.21 kanban task-21 frozen signature: tenant first).
+ * @param {number} tenantID Active tenant owning the monitor (socket.tenantID)
  * @param {number} userID ID of user who owns monitor
  * @param {number} monitorID ID of monitor to start
- * @param {number} tenantID Active tenant of the calling session (G4.18)
  * @returns {Promise<void>}
  */
-async function restartMonitor(userID, monitorID, tenantID) {
-    return await startMonitor(userID, monitorID, tenantID);
+async function restartMonitor(tenantID, userID, monitorID) {
+    return await startMonitor(tenantID, userID, monitorID);
 }
 
 /**
  * Pause a given monitor
+ * (G5.21 kanban task-21 frozen signature: tenant first).
+ * @param {number} tenantID Active tenant owning the monitor (socket.tenantID)
  * @param {number} userID ID of user who owns monitor
  * @param {number} monitorID ID of monitor to start
- * @param {number} tenantID Active tenant of the calling session (G4.18)
  * @returns {Promise<void>}
  */
-async function pauseMonitor(userID, monitorID, tenantID) {
+async function pauseMonitor(tenantID, userID, monitorID) {
     await checkOwner(userID, monitorID, tenantID);
 
     log.info("manage", `Pause Monitor: ${monitorID} User ID: ${userID}`);
@@ -2463,41 +2484,88 @@ async function pauseMonitor(userID, monitorID, tenantID) {
         userID,
     ], tenantID);
 
-    if (monitorID in server.monitorList) {
-        await server.monitorList[monitorID].stop();
-        server.monitorList[monitorID].active = 0;
+    // G5.21: stop and deactivate inside the tenant-partitioned engine map.
+    const tenantMonitorList = server.monitorListByTenant[tenantID] || {};
+    if (monitorID in tenantMonitorList) {
+        await tenantMonitorList[monitorID].stop();
+        tenantMonitorList[monitorID].active = 0;
     }
 }
 
 /**
- * Resume active monitors
+ * Resume active monitors for every tenant (G5.21 kanban task-21).
+ *
+ * Iterates the active tenants discovered in the tenant registry, loads each
+ * tenant's active monitors into its own bucket of
+ * server.monitorListByTenant, and starts them with staggered delays both
+ * within and across tenants so the startup request burst is spread out.
+ *
+ * Backward compat: on a single-tenant legacy install with no tenant rows at
+ * all, all active monitors are loaded into the default tenant bucket instead.
  * @returns {Promise<void>}
  */
 async function startMonitors() {
-    // G4.18 exemption: boot-time engine sweep before any session exists —
-    // deliberately cross-tenant (the monitoring engine owns all tenants'
-    // active monitors); tenant-scoped list emission is G5/task-19's concern.
-    // eslint-disable-next-line uptime-kuma/require-tenant-scope -- startup engine sweep, no session context (G5)
-    let list = await R.find("monitor", " active = 1 ");
+    // Partition discovery over the global tenant registry (meta-level
+    // enumeration, not a tenant-owned row read — same exemption shape as
+    // loadMaintenanceList()).
+    // eslint-disable-next-line uptime-kuma/require-tenant-scope -- tenant registry enumeration is partition discovery
+    const tenants = await R.find("tenant", " status = 'active' ");
 
-    for (let monitor of list) {
-        server.monitorList[monitor.id] = monitor;
+    if (tenants.length === 0) {
+        // Single-tenant legacy install: no tenant rows exist. Load everything
+        // into the default tenant bucket (backward-compat path).
+        log.info("server", "startMonitors: no tenants found, falling back to legacy flat load into default tenant bucket");
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- boot-time engine sweep before any session exists (legacy fallback)
+        let list = await R.find("monitor", " active = 1 ");
+        const bucket = server.defaultTenantId ?? "default";
+        server.monitorListByTenant[bucket] = {};
+
+        for (let monitor of list) {
+            server.monitorListByTenant[bucket][monitor.id] = monitor;
+        }
+
+        for (let monitor of list) {
+            try {
+                await monitor.start(io);
+            } catch (e) {
+                log.error("monitor", e);
+            }
+            // Give some delays, so all monitors won't make request at the same moment when just start the server.
+            await sleep(getRandomInt(300, 1000));
+        }
+        return;
     }
 
-    for (let monitor of list) {
-        try {
-            await monitor.start(io);
-        } catch (e) {
-            log.error("monitor", e);
+    for (const tenant of tenants) {
+        const tenantId = tenant.id;
+        if (!server.monitorListByTenant[tenantId]) {
+            server.monitorListByTenant[tenantId] = {};
         }
-        // Give some delays, so all monitors won't make request at the same moment when just start the server.
-        await sleep(getRandomInt(300, 1000));
+
+        // G4.17 wrapper injects the tenant filter; per-tenant active monitors
+        // land in their own bucket of monitorListByTenant.
+        let list = await findForTenant("monitor", "active = 1", [], tenantId, "ORDER BY weight DESC");
+
+        for (let monitor of list) {
+            server.monitorListByTenant[tenantId][monitor.id] = monitor;
+        }
+
+        // Stagger starts across tenants too (not just within one tenant), so
+        // many tenants don't produce a thundering herd at boot.
+        for (let monitor of list) {
+            try {
+                await monitor.start(io);
+            } catch (e) {
+                log.error("monitor", e);
+            }
+            await sleep(getRandomInt(300, 1000));
+        }
     }
 }
 
 /**
  * Shutdown the application
- * Stops all monitors and closes the database connection.
+ * Stops all monitors across every tenant and closes the database connection.
  * @param {string} signal The signal that triggered this function to be called.
  * @returns {Promise<void>}
  */
@@ -2508,9 +2576,12 @@ async function shutdownFunction(signal) {
     await server.stop();
 
     log.info("server", "Stopping all monitors");
-    for (let id in server.monitorList) {
-        let monitor = server.monitorList[id];
-        await monitor.stop();
+    // G5.21: iterate every tenant bucket of the partitioned engine map.
+    for (const tenantMonitorList of Object.values(server.monitorListByTenant)) {
+        for (let id in tenantMonitorList) {
+            let monitor = tenantMonitorList[id];
+            await monitor.stop();
+        }
     }
     await sleep(2000);
     await Database.close();

@@ -37,25 +37,69 @@ class UptimeKumaServer {
     static instance = null;
 
     /**
-     * Main monitor list
-     * @type {{}}
+     * G5.21 (kanban task-21): the canonical in-memory engine map, partitioned
+     * by tenant. Shape: monitorListByTenant[tenantId][monitorID] = Monitor.
+     * Written by startMonitors()/startMonitor()/pauseMonitor() and read by
+     * shutdownFunction(); tasks G5.22/G5.23 consume this structure. The
+     * legacy flat `monitorList` property is a @deprecated getter below that
+     * returns the default tenant's bucket for backward compatibility with
+     * single-tenant code paths that have not been migrated yet.
+     * @type {{[tenantId: number]: {[monitorID: number]: object}}}
      */
-    monitorList = {};
+    monitorListByTenant = {};
 
     /**
-     * Main maintenance list
-     * @type {{}}
+     * Resolved id of the seeded default tenant (slug "default"). Populated in
+     * initAfterDatabaseReady() and used only by the deprecated
+     * `monitorList` compat getter. null until resolved, which makes the
+     * getter return an empty object — safe at boot time when nothing has been
+     * loaded yet anyway.
+     * @type {number|null}
      */
-    maintenanceList = {};
+    defaultTenantId = null;
 
     /**
-     * G4.19: tenant-partitioned maintenance map. Shape:
+     * G4.19/G5.21: tenant-partitioned maintenance map. Shape:
      * maintenanceListByTenant[tenantId][maintenanceId] = bean. Filled by
-     * loadMaintenanceList(); consumed by getMaintenanceJSONList so emits never
-     * leak across tenants. The per-tenant tick loop itself is G5.
+     * loadMaintenanceList(); consumed by getMaintenanceJSONList and
+     * getMaintenanceForTenant so emits never leak across tenants.
      * @type {{[tenantId: number]: {[maintenanceId: number]: object}}}
      */
     maintenanceListByTenant = {};
+
+    /**
+     * Legacy flat monitor list. @deprecated since G5.21 (kanban task-21):
+     * returns the DEFAULT tenant's bucket of monitorListByTenant so code not
+     * yet migrated keeps working on single-tenant installs. Never use in new
+     * code — index monitorListByTenant[tenantId] instead. Note this getter
+     * must stay read-only for the map shape itself: callers may mutate the
+     * returned bucket (legacy write pattern), but per-tenant writes belong to
+     * the partitioned structure.
+     * @returns {{[monitorID: number]: object}} default tenant bucket
+     */
+    get monitorList() {
+        return this.monitorListByTenant[this.defaultTenantId] || {};
+    }
+
+    /**
+     * Legacy flat maintenance list.
+     * @deprecated since G5.21 (kanban task-21): maintenanceListByTenant below
+     * is the canonical map. This flat index is deliberately kept as a GLOBAL
+     * registry (not a per-tenant bucket view) for two reasons:
+     *  1. Engine consumers keyed by maintenanceID alone still resolve through
+     *     it (getMaintenance): Monitor.isUnderMaintenance (beat + push
+     *     router) and public status-page maintenance display have no tenant
+     *     context until G5.22 owns dispatch migration. Maintenance ids are
+     *     globally unique PKs, so this read cannot cross tenants.
+     *  2. The maintenance socket handler registers runtime-created beans via
+     *     `server.maintenanceList[id] = bean`. Redirecting that write into a
+     *     default-tenant bucket view would leak other tenants' rows into the
+     *     default tenant's emits.
+     * New code MUST use getMaintenanceForTenant(maintenanceID, tenantID).
+     * Full retirement of this index is owned by G5.22/G5.23.
+     * @type {{}}
+     */
+    maintenanceList = {};
 
     entryPage = "dashboard";
     app = undefined;
@@ -237,6 +281,24 @@ class UptimeKumaServer {
         log.debug("DEBUG", "Timezone: " + process.env.TZ);
         log.debug("DEBUG", "Current Time: " + dayjs.tz().format());
 
+        // G5.21 (kanban task-21): resolve the seeded default tenant's numeric
+        // id once for the deprecated `monitorList` compat getter. Kept in
+        // sync with DEFAULT_TENANT_SLUG in server/repository/tenant-repo.js
+        // (duplicated literal, same reason: avoid widening the import graph).
+        // A missing default tenant is not fatal — the engine is fully
+        // partitioned — but the legacy getter will return an empty bucket,
+        // which is announced loudly.
+        try {
+            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- the tenant registry itself is global by definition (slug lookup, partition discovery)
+            const defaultTenant = await R.findOne("tenant", " slug = ? ", [ "default" ]);
+            this.defaultTenantId = defaultTenant ? defaultTenant.id : null;
+            if (this.defaultTenantId == null) {
+                log.warn("server", "initAfterDatabaseReady: no 'default' tenant found; legacy monitorList compat getter returns an empty bucket");
+            }
+        } catch (e) {
+            log.error("server", `initAfterDatabaseReady: failed to resolve default tenant id: ${e.message}`);
+        }
+
         await this.loadMaintenanceList();
 
         // G2 task-12: start the tenant-membership watchdog (force-logout on
@@ -303,7 +365,7 @@ class UptimeKumaServer {
         // Tenant filter is injected by the wrapper — never hand-written here.
         const tenantScopedQuery = monitorID ? " id = ? AND user_id = ? " : " user_id = ? ";
         const tenantScopedParams = monitorID ? [monitorID, userID] : [userID];
-        let monitorList = await findForTenant(
+        let tenantMonitorBeans = await findForTenant(
             "monitor",
             tenantScopedQuery,
             tenantScopedParams,
@@ -311,7 +373,7 @@ class UptimeKumaServer {
             "ORDER BY weight DESC, name"
         );
 
-        const monitorData = monitorList.map((monitor) => ({
+        const monitorData = tenantMonitorBeans.map((monitor) => ({
             id: monitor.id,
             active: monitor.active,
             name: monitor.name,
@@ -319,7 +381,7 @@ class UptimeKumaServer {
         const preloadData = await Monitor.preparePreloadData(monitorData);
 
         const result = {};
-        monitorList.forEach((monitor) => (result[monitor.id] = monitor.toJSON(preloadData)));
+        tenantMonitorBeans.forEach((monitor) => (result[monitor.id] = monitor.toJSON(preloadData)));
         return result;
     }
 
@@ -371,13 +433,14 @@ class UptimeKumaServer {
     }
 
     /**
-     * Load the maintenance lists and run them (G4.19: partitioned by tenant).
+     * Load the maintenance lists and run them (G5.21: partitioned by tenant).
      *
-     * The heavy per-tenant scheduler rewrite is G5; here only the storage
-     * shape is the contract: `this.maintenanceListByTenant[tenantId]` holds
-     * that tenant's beans so emits never leak across tenants. The legacy flat
-     * `this.maintenanceList` map is still populated for engine consumers
-     * (`getMaintenance`, `maintenance.run`) until G5 replaces them.
+     * Storage shape (the G4.19 contract, now canonical):
+     * `this.maintenanceListByTenant[tenantId]` holds that tenant's beans so
+     * emits never leak across tenants. The deprecated flat `maintenanceList`
+     * index is still filled here as a global registry for engine consumers
+     * keyed by maintenanceID alone (see the field's JSDoc for why it must not
+     * become a bucket view). Retirement is owned by G5.22/G5.23.
      * Enumerating DISTINCT tenant_id is meta-level partition discovery, not a
      * row read, so it is exempt from the wrapper by design.
      * @returns {Promise<void>}
@@ -401,12 +464,36 @@ class UptimeKumaServer {
 
     /**
      * Retrieve a specific maintenance
-     * @param {number} maintenanceID ID of maintenance to retrieve
-     * @returns {(object|null)} Maintenance if it exists
+     * (G5.21 kanban task-21 frozen signature: tenant first).
+     *
+     * Canonical form — `getMaintenance(tenantId, maintenanceID)` — reads only
+     * the tenant-partitioned map, so a caller holding a tenant-scoped bean
+     * (Monitor.isUnderMaintenance in the beat loop) can never resolve a
+     * maintenance of another tenant.
+     *
+     * Legacy tolerance (documented pattern of resolveTenantId): when called
+     * with a single argument — engine consumers that have no tenant context
+     * yet (public status-page display, push router) — the argument is treated
+     * as the maintenanceID and the lookup degrades to the deprecated global
+     * registry (see the maintenanceList field's JSDoc for why it stays a
+     * global index rather than a default-tenant bucket view). Maintenance ids
+     * are globally unique PKs, so this fallback cannot cross tenants for a
+     * given id; it is NOT access-controlled, which is why the two-arg form is
+     * frozen for all socket-facing code (G5.22/G5.23 own full retirement).
+     * @param {number} tenantId Active tenant scoping the lookup
+     * @param {number} maintenanceID ID of maintenance to retrieve. Optional:
+     * when omitted (legacy single-arg form) the argument above is treated as
+     * the maintenanceID and the deprecated global registry is read instead.
+     * @returns {(object|null)} Maintenance if it exists in that tenant
      */
-    getMaintenance(maintenanceID) {
-        if (this.maintenanceList[maintenanceID]) {
-            return this.maintenanceList[maintenanceID];
+    getMaintenance(tenantId, maintenanceID) {
+        // Legacy single-arg form: getMaintenance(maintenanceID)
+        if (maintenanceID === undefined) {
+            return this.maintenanceList[tenantId] || null;
+        }
+        const tenantList = this.maintenanceListByTenant[tenantId];
+        if (tenantList && tenantList[maintenanceID]) {
+            return tenantList[maintenanceID];
         }
         return null;
     }
