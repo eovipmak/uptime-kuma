@@ -2,6 +2,7 @@ const dayjs = require("dayjs");
 const axios = require("axios");
 const { setTimeout, clearTimeout } = require("unlimited-timeout");
 const { Prometheus } = require("../prometheus");
+const TranslatableError = require("../translatable-error");
 const {
     log,
     UP,
@@ -47,8 +48,10 @@ const { BeanModel } = require("redbean-node/dist/bean-model");
 // G4.19: tenant-safe query wrappers (G4.17 contract)
 const {
     findOneForTenant,
+    findForTenant,
     execForTenant,
     resolveTenantId,
+    DEFAULT_TENANT_SLUG,
 } = require("../repository/tenant-repo");
 // G2 task-11: tenant-partitioned room keys for live emits
 const { userRoom } = require("../socket-handlers/tenant-room");
@@ -414,6 +417,118 @@ class Monitor extends BeanModel {
      */
     getSaveErrorResponse() {
         return Boolean(this.save_error_response);
+    }
+
+    /**
+     * G5.23 per-plan engine quotas, keyed by `tenant.plan`.
+     * Hardcoded defaults until G8 (Billing) replaces them with
+     * database-driven quotas; `null` means unlimited.
+     * @type {Record<string, {maxMonitors: number|null, minCheckInterval: number|null}>}
+     */
+    static planQuotas = {
+        free: {
+            maxMonitors: 100,
+            minCheckInterval: 60,
+        },
+        pro: {
+            maxMonitors: 500,
+            minCheckInterval: 30,
+        },
+        business: {
+            maxMonitors: 1000,
+            minCheckInterval: 20,
+        },
+        enterprise: {
+            maxMonitors: 5000,
+            minCheckInterval: 5,
+        },
+    };
+
+    /**
+     * Resolve the effective engine quota for a tenant (G5.23).
+     *
+     * - The default tenant (slug "default") is unlimited: it absorbs every
+     *   legacy single-tenant install, and capping it would regress existing
+     *   instances (kanban task-23 behavioral parity contract).
+     * - A missing/null/unrecognized plan falls back to the restrictive
+     *   "free" defaults.
+     * @param {number} tenantId Tenant whose quota should be resolved
+     * @returns {Promise<{plan: string, maxMonitors: number|null, minCheckInterval: number|null}>}
+     *   Effective quota (null value = unlimited)
+     */
+    static async getTenantQuota(tenantId) {
+        const freeQuota = Monitor.planQuotas.free;
+        if (tenantId === null || tenantId === undefined) {
+            return {
+                plan: "free",
+                maxMonitors: freeQuota.maxMonitors,
+                minCheckInterval: freeQuota.minCheckInterval,
+            };
+        }
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- tenant registry metadata read (slug/plan), not a tenant-owned business row (same shape as resolveTenantId)
+        const tenant = await R.findOne("tenant", " id = ? ", [tenantId]);
+        if (!tenant) {
+            log.warn("monitor", `getTenantQuota: tenant ${tenantId} not found, applying free-plan defaults`);
+            return {
+                plan: "free",
+                maxMonitors: freeQuota.maxMonitors,
+                minCheckInterval: freeQuota.minCheckInterval,
+            };
+        }
+        // Legacy single-tenant bucket keeps unlimited engine quotas.
+        if (tenant.slug === DEFAULT_TENANT_SLUG) {
+            return {
+                plan: tenant.plan || null,
+                maxMonitors: null,
+                minCheckInterval: null,
+            };
+        }
+        const planKey = String(tenant.plan || "free").toLowerCase();
+        const quota = Monitor.planQuotas[planKey] ?? Monitor.planQuotas.free;
+        return {
+            plan: planKey,
+            maxMonitors: quota.maxMonitors,
+            minCheckInterval: quota.minCheckInterval,
+        };
+    }
+
+    /**
+     * Enforce per-tenant engine quotas before a monitor starts (G5.23):
+     * maximum active monitors per tenant and minimum check interval.
+     *
+     * The active-monitor count excludes the monitor being started itself so
+     * that restarting an already-active monitor never trips the cap.
+     * @param {number} tenantId Active tenant owning the monitor
+     * @param {number} monitorID ID of the monitor about to start (excluded from the count)
+     * @param {number|null} interval Configured check interval of the monitor (seconds)
+     * @returns {Promise<void>}
+     * @throws {TranslatableError} "quotaExceeded" when the tenant is at its max-monitor cap;
+     * "intervalTooLow" when the interval is below the plan minimum
+     */
+    static async enforceStartQuota(tenantId, monitorID, interval) {
+        const quota = await Monitor.getTenantQuota(tenantId);
+
+        if (quota.maxMonitors !== null && quota.maxMonitors > 0) {
+            const otherActiveMonitors = await findForTenant("monitor", "active = 1 AND id != ?", [
+                monitorID,
+            ], tenantId);
+            if (otherActiveMonitors.length >= quota.maxMonitors) {
+                log.warn("monitor", `Tenant ${tenantId}: start of monitor ${monitorID} rejected (quotaExceeded, max ${quota.maxMonitors})`);
+                throw new TranslatableError("quotaExceeded");
+            }
+        }
+
+        if (
+            quota.minCheckInterval !== null &&
+            quota.minCheckInterval > 0 &&
+            interval !== null &&
+            interval !== undefined &&
+            interval > 0 &&
+            interval < quota.minCheckInterval
+        ) {
+            log.warn("monitor", `Tenant ${tenantId}: start of monitor ${monitorID} rejected (intervalTooLow, min ${quota.minCheckInterval}s)`);
+            throw new TranslatableError("intervalTooLow");
+        }
     }
 
     /**
@@ -1100,7 +1215,12 @@ class Monitor extends BeanModel {
             const data24h = uptimeCalculator.get24Hour();
             const data30d = uptimeCalculator.get30Day();
             const data1y = uptimeCalculator.get1Year();
-            this.prometheus?.update(bean, tlsInfo, { data24h, data30d, data1y });
+            // G5.23: tenant-aware Prometheus update (tenant_id label).
+            this.prometheus?.update(this.tenant_id, bean, tlsInfo, {
+                data24h,
+                data30d,
+                data1y,
+            });
 
             previousBeat = bean;
 
@@ -1245,7 +1365,8 @@ class Monitor extends BeanModel {
         clearTimeout(this.heartbeatInterval);
         this.isStop = true;
 
-        this.prometheus?.remove();
+        // G5.23: tenant-aware Prometheus removal ((tenant_id, monitor_id) series).
+        this.prometheus?.remove(this.tenant_id, this.id);
 
         // G5.21 (kanban task-21): drop this monitor's tenant-partitioned
         // calculator so paused/deleted monitors don't accumulate entries in
@@ -2205,7 +2326,8 @@ class Monitor extends BeanModel {
      */
     async handleTlsInfo(tlsInfo) {
         await this.updateTlsInfo(tlsInfo);
-        this.prometheus?.update(null, tlsInfo, null);
+        // G5.23: tenant-aware Prometheus update (tenant_id label).
+        this.prometheus?.update(this.tenant_id, null, tlsInfo, null);
 
         if (!this.getIgnoreTls() && this.isEnabledExpiryNotification()) {
             log.debug("monitor", `[${this.name}] call checkCertExpiryNotifications`);

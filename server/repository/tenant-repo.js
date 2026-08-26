@@ -340,4 +340,5 @@ module.exports = {
     dispenseForTenant,
     TenantScopedQueryBuilder,
     resolveTenantId,
+    DEFAULT_TENANT_SLUG,
 };

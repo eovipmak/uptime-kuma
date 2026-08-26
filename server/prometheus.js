@@ -22,6 +22,10 @@ class Prometheus {
     constructor(monitor, tags) {
         this.monitorLabelValues = {
             ...this.mapTagsToLabels(tags),
+            // G5.23: every exported series is labeled with the owning tenant.
+            // Null-tenant rows (pre-G1 backfill edge) export an empty label
+            // value instead of being dropped.
+            tenant_id: monitor.tenant_id != null ? String(monitor.tenant_id) : "",
             monitor_id: monitor.id,
             monitor_name: monitor.name,
             monitor_type: monitor.type,
@@ -53,6 +57,10 @@ class Prometheus {
         );
 
         const commonLabels = [
+            // G5.23: tenant_id leads the label set so multi-tenant scrapes can
+            // be filtered/aggregated per tenant without renaming any metric
+            // (backward compatible for existing dashboards).
+            "tenant_id",
             ...tags,
             "monitor_id",
             "monitor_name",
@@ -146,14 +154,31 @@ class Prometheus {
     }
 
     /**
+     * Merge the effective label values for an update/remove call (G5.23).
+     * The tenant_id label value comes from the explicit argument when given,
+     * otherwise falls back to the constructor-captured monitor tenant.
+     * @param {number|null|undefined} tenantId Tenant override supplied by the caller
+     * @returns {object} Complete label values object for every gauge
+     */
+    buildLabelValues(tenantId) {
+        return {
+            ...this.monitorLabelValues,
+            tenant_id: tenantId != null ? String(tenantId) : (this.monitorLabelValues.tenant_id ?? ""),
+        };
+    }
+
+    /**
      * Update the metrics page
      * @typedef {import("./uptime-calculator").UptimeDataResult} UptimeDataResult
+     * @param {number|null} tenantId Owning tenant of the monitor (G5.23 tenant_id label; null keeps the constructor value)
      * @param {object} heartbeat Heartbeat details
      * @param {object} tlsInfo TLS details
      * @param {{data24h: UptimeDataResult, data30d: UptimeDataResult, data1y:UptimeDataResult} | null} uptime the uptime and average response rate over a variety of fixed windows
      * @returns {void}
      */
-    update(heartbeat, tlsInfo, uptime) {
+    update(tenantId, heartbeat, tlsInfo, uptime) {
+        const labelValues = this.buildLabelValues(tenantId);
+
         if (typeof tlsInfo !== "undefined") {
             try {
                 let isValid;
@@ -162,14 +187,14 @@ class Prometheus {
                 } else {
                     isValid = 0;
                 }
-                monitorCertIsValid.set(this.monitorLabelValues, isValid);
+                monitorCertIsValid.set(labelValues, isValid);
             } catch (e) {
                 log.error("prometheus", "Caught error", e);
             }
 
             try {
                 if (tlsInfo.certInfo != null) {
-                    monitorCertDaysRemaining.set(this.monitorLabelValues, tlsInfo.certInfo.daysRemaining);
+                    monitorCertDaysRemaining.set(labelValues, tlsInfo.certInfo.daysRemaining);
                 }
             } catch (e) {
                 log.error("prometheus", "Caught error", e);
@@ -179,7 +204,7 @@ class Prometheus {
         if (uptime) {
             try {
                 monitorAverageResponseTimeSeconds.set(
-                    { ...this.monitorLabelValues, window: "1d" },
+                    { ...labelValues, window: "1d" },
                     uptime.data24h.avgPing / 1000
                 );
             } catch (e) {
@@ -187,7 +212,7 @@ class Prometheus {
             }
             try {
                 monitorAverageResponseTimeSeconds.set(
-                    { ...this.monitorLabelValues, window: "30d" },
+                    { ...labelValues, window: "30d" },
                     uptime.data30d.avgPing / 1000
                 );
             } catch (e) {
@@ -195,24 +220,24 @@ class Prometheus {
             }
             try {
                 monitorAverageResponseTimeSeconds.set(
-                    { ...this.monitorLabelValues, window: "365d" },
+                    { ...labelValues, window: "365d" },
                     uptime.data1y.avgPing / 1000
                 );
             } catch (e) {
                 log.error("prometheus", "Caught error", e);
             }
             try {
-                monitorUptimeRatio.set({ ...this.monitorLabelValues, window: "1d" }, uptime.data24h.uptime);
+                monitorUptimeRatio.set({ ...labelValues, window: "1d" }, uptime.data24h.uptime);
             } catch (e) {
                 log.error("prometheus", "Caught error", e);
             }
             try {
-                monitorUptimeRatio.set({ ...this.monitorLabelValues, window: "30d" }, uptime.data30d.uptime);
+                monitorUptimeRatio.set({ ...labelValues, window: "30d" }, uptime.data30d.uptime);
             } catch (e) {
                 log.error("prometheus", "Caught error", e);
             }
             try {
-                monitorUptimeRatio.set({ ...this.monitorLabelValues, window: "365d" }, uptime.data1y.uptime);
+                monitorUptimeRatio.set({ ...labelValues, window: "365d" }, uptime.data1y.uptime);
             } catch (e) {
                 log.error("prometheus", "Caught error", e);
             }
@@ -220,7 +245,7 @@ class Prometheus {
 
         if (heartbeat) {
             try {
-                monitorStatus.set(this.monitorLabelValues, heartbeat.status);
+                monitorStatus.set(labelValues, heartbeat.status);
             } catch (e) {
                 log.error("prometheus", "Caught error");
                 log.error("prometheus", e);
@@ -228,10 +253,10 @@ class Prometheus {
 
             try {
                 if (typeof heartbeat.ping === "number") {
-                    monitorResponseTime.set(this.monitorLabelValues, heartbeat.ping);
+                    monitorResponseTime.set(labelValues, heartbeat.ping);
                 } else {
                     // Is it good?
-                    monitorResponseTime.set(this.monitorLabelValues, -1);
+                    monitorResponseTime.set(labelValues, -1);
                 }
             } catch (e) {
                 log.error("prometheus", "Caught error");
@@ -242,18 +267,26 @@ class Prometheus {
 
     /**
      * Remove monitor from prometheus
+     * @param {number|null} tenantId Owning tenant of the monitor (G5.23; selects the exact (tenant_id, monitor_id) series)
+     * @param {number|null} monitorID ID of the monitor whose series should be removed
      * @returns {void}
      */
-    remove() {
+    remove(tenantId, monitorID) {
+        const labelValues = {
+            ...this.buildLabelValues(tenantId),
+            ...(monitorID != null ? {
+                monitor_id: monitorID,
+            } : {}),
+        };
         try {
-            monitorCertDaysRemaining.remove(this.monitorLabelValues);
-            monitorCertIsValid.remove(this.monitorLabelValues);
+            monitorCertDaysRemaining.remove(labelValues);
+            monitorCertIsValid.remove(labelValues);
             ["1d", "30d", "365d"].forEach((window) => {
-                monitorUptimeRatio.remove({ ...this.monitorLabelValues, window });
-                monitorAverageResponseTimeSeconds.remove({ ...this.monitorLabelValues, window });
+                monitorUptimeRatio.remove({ ...labelValues, window });
+                monitorAverageResponseTimeSeconds.remove({ ...labelValues, window });
             });
-            monitorResponseTime.remove(this.monitorLabelValues);
-            monitorStatus.remove(this.monitorLabelValues);
+            monitorResponseTime.remove(labelValues);
+            monitorStatus.remove(labelValues);
         } catch (e) {
             console.error(e);
         }

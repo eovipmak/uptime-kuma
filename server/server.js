@@ -46,7 +46,7 @@ if (!semver.satisfies(nodeVersion, requiredNodeVersions)) {
 }
 
 const args = require("args-parser")(process.argv);
-const { sleep, log, getRandomInt, genSecret, isDev } = require("../src/util");
+const { sleep, log, getRandomInt, genSecret, isDev, parsePositiveInt } = require("../src/util");
 const config = require("./config");
 
 process.title = "uptime-kuma";
@@ -2431,13 +2431,19 @@ async function startMonitor(tenantID, userID, monitorID) {
 
     log.info("manage", `Resume Monitor: ${monitorID} User ID: ${userID}`);
 
+    let monitor = await findOneForTenant("monitor", " id = ? ", [monitorID], tenantID);
+
+    // G5.23: per-tenant quota gate (max active monitors + minimum check
+    // interval, keyed by tenant.plan). Enforced BEFORE activation so a
+    // rejected start never flips active=1; restarts exclude the monitor
+    // itself from the cap count.
+    await Monitor.enforceStartQuota(tenantID, monitor.id, monitor.interval);
+
     // G4.18: tenant+user scoped activation
     await execForTenant("UPDATE monitor SET active = 1 WHERE id = ? AND user_id = ? ", [
         monitorID,
         userID,
     ], tenantID);
-
-    let monitor = await findOneForTenant("monitor", " id = ? ", [monitorID], tenantID);
 
     // G5.21: register in the tenant-partitioned engine map, never a flat map.
     if (!server.monitorListByTenant[tenantID]) {
@@ -2493,12 +2499,28 @@ async function pauseMonitor(tenantID, userID, monitorID) {
 }
 
 /**
- * Resume active monitors for every tenant (G5.21 kanban task-21).
+ * Maximum number of tenants whose monitors start concurrently at boot
+ * (G5.23 noisy-neighbor fairness). Configurable via the
+ * UPTIME_KUMA_MAX_CONCURRENT_TENANT_STARTUP environment variable.
+ * @type {number}
+ */
+const MAX_CONCURRENT_TENANTS = parsePositiveInt(
+    process.env.UPTIME_KUMA_MAX_CONCURRENT_TENANT_STARTUP,
+    5
+);
+
+/**
+ * Resume active monitors for every tenant (G5.21 kanban task-21, staggered
+ * per G5.23 kanban task-23).
  *
  * Iterates the active tenants discovered in the tenant registry, loads each
  * tenant's active monitors into its own bucket of
- * server.monitorListByTenant, and starts them with staggered delays both
- * within and across tenants so the startup request burst is spread out.
+ * server.monitorListByTenant, and starts them with staggered delays so the
+ * startup request burst is spread out:
+ * - within a tenant, monitor starts are sequential with a random delay;
+ * - across tenants, startup runs in bounded batches of
+ *   MAX_CONCURRENT_TENANTS with an inter-batch pause, so one noisy tenant
+ *   cannot monopolize the boot window.
  *
  * Backward compat: on a single-tenant legacy install with no tenant rows at
  * all, all active monitors are loaded into the default tenant bucket instead.
@@ -2536,8 +2558,13 @@ async function startMonitors() {
         return;
     }
 
-    for (const tenant of tenants) {
-        const tenantId = tenant.id;
+    /**
+     * Load one tenant's active monitors into its engine bucket and start
+     * them sequentially with a per-monitor jitter delay (inner staggering).
+     * @param {number} tenantId Tenant whose active monitors should start
+     * @returns {Promise<void>}
+     */
+    const startTenantMonitors = async (tenantId) => {
         if (!server.monitorListByTenant[tenantId]) {
             server.monitorListByTenant[tenantId] = {};
         }
@@ -2550,8 +2577,6 @@ async function startMonitors() {
             server.monitorListByTenant[tenantId][monitor.id] = monitor;
         }
 
-        // Stagger starts across tenants too (not just within one tenant), so
-        // many tenants don't produce a thundering herd at boot.
         for (let monitor of list) {
             try {
                 await monitor.start(io);
@@ -2559,6 +2584,18 @@ async function startMonitors() {
                 log.error("monitor", e);
             }
             await sleep(getRandomInt(300, 1000));
+        }
+    };
+
+    // G5.23: stagger starts across tenants too (not just within one tenant),
+    // bounding concurrent tenant startup to MAX_CONCURRENT_TENANTS with an
+    // inter-batch pause so many tenants don't produce a thundering herd.
+    for (let i = 0; i < tenants.length; i += MAX_CONCURRENT_TENANTS) {
+        const batch = tenants.slice(i, i + MAX_CONCURRENT_TENANTS);
+        await Promise.all(batch.map((tenant) => startTenantMonitors(tenant.id)));
+        if (i + MAX_CONCURRENT_TENANTS < tenants.length) {
+            log.debug("server", `startMonitors: started ${i + batch.length}/${tenants.length} tenants, pausing before next batch`);
+            await sleep(2000);
         }
     }
 }
