@@ -1,7 +1,7 @@
 # Task G5.23 — Quota, Rate Limiting, Prometheus, Retention & Multi-Tenant Engine Tests
 
 **Phase:** G5 — Monitoring Engine Multi-Tenant
-**Status:** todo
+**Status:** completed
 **Estimate:** L (per plan template "Format output task chuẩn")
 **Reviewer:** Backend engine lead / Security lead / Uptime Kuma maintainer (G5 closing signoff)
 
@@ -199,3 +199,9 @@ Backend engine lead / Security lead / Uptime Kuma maintainer. Must verify that q
 - **Frontend quota display** — G7 owns the UI.
 - **Audit log for quota enforcement** — G9 owns audit logging.
 - **Load test (k6)** — G11 owns load testing.
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-26T11:58:00Z
+- Verification: PR #56 review (branch feat/g5-23-quota-prometheus-retention-tests @ 9a99a4d5, Echo implementer via KUM-208). Verified per task checklist: quota gate in startMonitor BEFORE activation via Monitor.enforceStartQuota — max active monitors & min check interval keyed by tenant.plan, restart-at-cap safe (id != self count), default tenant unlimited for parity; Prometheus tenant_id leading label on all gauges with update(tenantId,...)/remove(tenantId, monitorID) and every call site migrated (monitor.js x3, globalping.js x1); clearOldData per-plan retention (free:7/pro:90/business:365/enterprise:730) with default tenant keeping legacy Settings period and legacy global fallback when no tenant rows; startMonitors bounded batches of UPTIME_KUMA_MAX_CONCURRENT_TENANT_STARTUP (default 5) with inter-batch pause. Checks run by CTO on the branch: eslint changed files 0 errors (10 documented require-tenant-scope warnings); tsc --project tsconfig-backend.json clean; node --test test/backend-test/test-tenant-engine.js on Node 22 = 21/21 pass (suite requires Node >= 22 — fails on env default v18 by design); npm run test-backend = 549 pass, failures only in Testcontainers-requiring suites (MQTT/MSSQL/MySQL/Oracle/Postgres/RabbitMQ — "Could not find a working container runtime strategy", identical environmental failures on master, excluded per board directive D-016). Acceptance criteria from task file: all satisfied. Note: task-file suggested error keys monitor.quotaExceeded/monitor.intervalTooLow implemented as top-level quotaExceeded/intervalTooLow in src/lang/en.json + parsePositiveInt added to src/util.ts/.js.
+- Commit or artifact reference: PR #56 squash merge 6f628f00 (feat G5.23 quota, rate limiting, prometheus tenant_id, retention & engine tests, KUM-208). Closes Phase G5 — unblocks G6.24 (status page tenant resolution contract).
