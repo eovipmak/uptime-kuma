@@ -31,6 +31,7 @@ On failure (all strategies miss) it responds `404 {"message": "Status Page not f
 Notes:
 
 - Custom domain beats subdomain on purpose: a `status_page_cname` row points at one specific page, while a subdomain only identifies a tenant.
+- Strategy 5 also fires when a host-derived strategy *matched but missed*: if strategy 2/3 successfully derives a tenant but that tenant owns no published page for the requested slug, resolution falls through to strategies 4→5 and the **default tenant's page is rendered under the requesting host** — e.g. `acme.<base-domain>/status/<slug-only-default-has>` serves the default tenant's page on acme's hostname, and a custom-domain host whose `status_page_cname` row was deleted falls back the same way. This intentionally preserves pre-fork global-slug behavior; published pages are public, so it is not treated as a cross-tenant exposure.
 - The middleware is intentionally cross-tenant (hostname → tenant *derivation*); each unscoped lookup carries an inline `eslint-disable uptime-kuma/require-tenant-scope` with rationale.
 
 ## Where it is registered
