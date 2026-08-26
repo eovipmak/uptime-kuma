@@ -23,7 +23,9 @@ module.exports.remoteBrowserSocketHandler = (socket) => {
             // remoteBrowserID updates the entry).
             checkPermission(socket, PERMISSIONS.TENANT_SETTINGS_UPDATE);
 
-            let remoteBrowserBean = await RemoteBrowser.save(remoteBrowser, remoteBrowserID, socket.userID);
+            // G4.21: thread the caller's active tenant so the row is born in
+            // (or looked up within) the right tenant, not the default fallback
+            let remoteBrowserBean = await RemoteBrowser.save(remoteBrowser, remoteBrowserID, socket.userID, socket.tenantID);
             await sendRemoteBrowserList(socket);
 
             callback({
@@ -47,7 +49,8 @@ module.exports.remoteBrowserSocketHandler = (socket) => {
             // (see addRemoteBrowser annotation).
             checkPermission(socket, PERMISSIONS.TENANT_SETTINGS_UPDATE);
 
-            await RemoteBrowser.delete(dockerHostID, socket.userID);
+            // G4.21: tenant-scoped delete — see addRemoteBrowser above
+            await RemoteBrowser.delete(dockerHostID, socket.userID, socket.tenantID);
             await sendRemoteBrowserList(socket);
 
             callback({

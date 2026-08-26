@@ -14,6 +14,13 @@ class Settings {
      *             timestamp: 12345678
      *         },
      *     }
+     *
+     * G4.20 cache-key note: keys here are setting names (e.g. "entryPage"),
+     * not tenant-owned resource ids. The `setting` table is instance-global
+     * by design (jwtSecret, global entry point, ...) — there is no tenant_id
+     * column, so this cache is deliberately NOT tenantCacheKey-namespaced.
+     * If per-tenant settings are introduced in a later phase, both the table
+     * and this key shape must migrate together.
      * @type {{}}
      */
     static cacheList = {};

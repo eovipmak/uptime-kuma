@@ -1963,7 +1963,10 @@ let needSetup = false;
                 // their own notifications").
                 checkPermission(socket, PERMISSIONS.NOTIFICATION_CREATE);
 
-                let notificationBean = await Notification.save(notification, notificationID, socket.userID);
+                // G4.21: thread the caller's active tenant so the row is born
+                // in (or looked up within) the right tenant, not the default
+                // fallback resolveTenantId(null) picks
+                let notificationBean = await Notification.save(notification, notificationID, socket.userID, socket.tenantID);
                 await sendNotificationList(socket);
 
                 callback({
@@ -1987,7 +1990,8 @@ let needSetup = false;
                 // per task-13 matrix (NOTIFICATION_DELETE).
                 checkPermission(socket, PERMISSIONS.NOTIFICATION_DELETE);
 
-                await Notification.delete(notificationID, socket.userID);
+                // G4.21: tenant-scoped delete — see addNotification above
+                await Notification.delete(notificationID, socket.userID, socket.tenantID);
                 await sendNotificationList(socket);
 
                 callback({

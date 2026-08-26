@@ -2,6 +2,9 @@ const PrometheusClient = require("prom-client");
 const { log } = require("../src/util");
 const { R } = require("redbean-node");
 
+// G4.20 cache-key note: Prometheus exports are process-global system metrics
+// scraped per install, not per tenant. There are no hand-written cache keys in
+// this module — cache key not tenant-scoped; metric is global (task-20 step 3).
 let monitorCertDaysRemaining = null;
 let monitorCertIsValid = null;
 let monitorUptimeRatio = null;

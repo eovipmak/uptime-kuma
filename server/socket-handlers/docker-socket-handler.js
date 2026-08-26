@@ -19,7 +19,9 @@ module.exports.dockerSocketHandler = (socket) => {
             // dockerHostID updates the host.
             checkPermission(socket, PERMISSIONS.DOCKER_HOST_MANAGE);
 
-            let dockerHostBean = await DockerHost.save(dockerHost, dockerHostID, socket.userID);
+            // G4.21: thread the caller's active tenant so the row is born in
+            // (or looked up within) the right tenant, not the default fallback
+            let dockerHostBean = await DockerHost.save(dockerHost, dockerHostID, socket.userID, socket.tenantID);
             await sendDockerHostList(socket);
 
             callback({
@@ -42,7 +44,8 @@ module.exports.dockerSocketHandler = (socket) => {
             // G3 task-14: mutation — Docker host management is tenant_admin (task-13 matrix)
             checkPermission(socket, PERMISSIONS.DOCKER_HOST_MANAGE);
 
-            await DockerHost.delete(dockerHostID, socket.userID);
+            // G4.21: tenant-scoped delete — see addDockerHost above
+            await DockerHost.delete(dockerHostID, socket.userID, socket.tenantID);
             await sendDockerHostList(socket);
 
             callback({

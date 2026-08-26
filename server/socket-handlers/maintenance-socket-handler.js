@@ -32,6 +32,13 @@ module.exports.maintenanceSocketHandler = (socket) => {
             let maintenanceID = await R.store(bean);
 
             server.maintenanceList[maintenanceID] = bean;
+            // G4.21: keep the tenant-partitioned map in sync too — without it
+            // the new entry is invisible to getMaintenanceJSONList emits and
+            // tenant-scoped lookups until the next full loadMaintenanceList()
+            if (!server.maintenanceListByTenant[socket.tenantID]) {
+                server.maintenanceListByTenant[socket.tenantID] = {};
+            }
+            server.maintenanceListByTenant[socket.tenantID][maintenanceID] = bean;
             await bean.run(true);
 
             await server.sendMaintenanceList(socket);
@@ -57,7 +64,14 @@ module.exports.maintenanceSocketHandler = (socket) => {
             // G3 task-14: mutation — maintenance management is tenant_admin (task-13 matrix)
             checkPermission(socket, PERMISSIONS.MAINTENANCE_MANAGE);
 
-            let bean = server.getMaintenance(maintenance.id);
+            // G4.21: tenant-scoped lookup — the legacy flat map is keyed by id
+            // alone, so a multi-tenant user could edit their own row living in
+            // another active tenant (G4.20 IDOR finding)
+            let bean = server.getMaintenanceForTenant(maintenance.id, socket.tenantID);
+
+            if (!bean) {
+                throw new Error("Maintenance not found");
+            }
 
             if (bean.user_id !== socket.userID) {
                 throw new Error("Permission denied.");
@@ -352,7 +366,8 @@ module.exports.maintenanceSocketHandler = (socket) => {
 
             log.debug("maintenance", `Pause Maintenance: ${maintenanceID} User ID: ${socket.userID}`);
 
-            let maintenance = server.getMaintenance(maintenanceID);
+            // G4.21: tenant-scoped lookup — see editMaintenance
+            let maintenance = server.getMaintenanceForTenant(maintenanceID, socket.tenantID);
 
             if (!maintenance) {
                 throw new Error("Maintenance not found");
@@ -387,7 +402,8 @@ module.exports.maintenanceSocketHandler = (socket) => {
 
             log.debug("maintenance", `Resume Maintenance: ${maintenanceID} User ID: ${socket.userID}`);
 
-            let maintenance = server.getMaintenance(maintenanceID);
+            // G4.21: tenant-scoped lookup — see editMaintenance
+            let maintenance = server.getMaintenanceForTenant(maintenanceID, socket.tenantID);
 
             if (!maintenance) {
                 throw new Error("Maintenance not found");
