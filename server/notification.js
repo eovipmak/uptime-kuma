@@ -1,6 +1,6 @@
 const { R } = require("redbean-node");
 const { log } = require("../src/util");
-const { findOneForTenant, dispenseForTenant, resolveTenantId } = require("./repository/tenant-repo");
+const { findOneForTenant, dispenseForTenant, resolveTenantId, findForTenant } = require("./repository/tenant-repo");
 const Alerta = require("./notification-providers/alerta");
 const AlertNow = require("./notification-providers/alertnow");
 const AliyunSms = require("./notification-providers/aliyun-sms");
@@ -249,11 +249,24 @@ class Notification {
      * @param {string} msg General Message
      * @param {object} monitorJSON Monitor details (For Up/Down only)
      * @param {object} heartbeatJSON Heartbeat details (For Up/Down only)
+     * @param {number|null} tenantId Active tenant of the dispatching monitor
+     * (G5.22). Embedded into the monitor/heartbeat JSON payloads so providers
+     * can label per tenant without a provider-signature change; providers keep
+     * ignoring unknown payload fields. Null (legacy/test callers) leaves the
+     * payloads untouched.
      * @returns {Promise<string>} Successful msg
      * @throws Error with fail msg
      */
-    static async send(notification, msg, monitorJSON = null, heartbeatJSON = null) {
+    static async send(notification, msg, monitorJSON = null, heartbeatJSON = null, tenantId = null) {
         if (this.providerList[notification.type]) {
+            if (tenantId != null) {
+                if (monitorJSON != null) {
+                    monitorJSON["tenant_id"] = tenantId;
+                }
+                if (heartbeatJSON != null) {
+                    heartbeatJSON["tenant_id"] = tenantId;
+                }
+            }
             return this.providerList[notification.type].send(notification, msg, monitorJSON, heartbeatJSON);
         } else {
             throw new Error("Notification type is not supported");
@@ -350,8 +363,9 @@ class Notification {
  */
 async function applyNotificationEveryMonitor(notificationID, userID, tenantId) {
     // A user may hold monitors in more than one tenant; applyExisting applies
-    // per active tenant only.
-    let monitors = await R.getAll("SELECT id FROM monitor WHERE user_id = ? AND tenant_id = ?", [userID, tenantId]);
+    // per active tenant only. G5.22: fetch via the frozen G4 wrapper so the
+    // tenant filter cannot drift from the data-access contract.
+    let monitors = await findForTenant("monitor", "user_id = ?", [userID], tenantId);
 
     for (let i = 0; i < monitors.length; i++) {
         // eslint-disable-next-line uptime-kuma/require-tenant-scope -- monitor_notification is FK-anchored to monitor (no tenant_id column by G1 design); the monitor id above is already tenant-verified

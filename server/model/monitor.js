@@ -434,6 +434,10 @@ class Monitor extends BeanModel {
         }
 
         const beat = async () => {
+            // G5.22 (kanban task-22): capture the loaded bean's tenant once, at
+            // the top of the closure. Every emit/dispatch below must stay inside
+            // this tenant's blast radius even if the row were reloaded mid-beat.
+            const tenantId = this.tenant_id;
             let beatInterval = this.interval;
 
             if (!beatInterval) {
@@ -461,7 +465,12 @@ class Monitor extends BeanModel {
 
             const isFirstBeat = !previousBeat;
 
-            // eslint-disable-next-line uptime-kuma/require-tenant-scope -- heartbeat rows carry no tenant_id column (G1); the row is born under this tenant-verified monitor anchor
+            // G5.22: heartbeat rows carry no tenant_id column by design
+            // (ADR-0002 — FK-anchored to monitor), so dispenseForTenant() must
+            // NOT be used here: it presets bean.tenant_id and the frozen-mode
+            // INSERT fails with "table heartbeat has no column named tenant_id".
+            // Tenancy travels via monitor_id; the tenantId captured above scopes
+            // the emit/dispatch side of the beat.
             let bean = R.dispense("heartbeat");
             bean.monitor_id = this.id;
             bean.time = R.isoDateTimeMillis(dayjs.utc());
@@ -479,7 +488,7 @@ class Monitor extends BeanModel {
             }
 
             try {
-                if (await Monitor.isUnderMaintenance(this.id, this.tenant_id)) {
+                if (await Monitor.isUnderMaintenance(this.id, tenantId)) {
                     bean.msg = "Monitor under maintenance";
                     bean.status = MAINTENANCE;
                 } else if (this.type === "http" || this.type === "keyword" || this.type === "json-query") {
@@ -1021,7 +1030,7 @@ class Monitor extends BeanModel {
                     if (domainExpiryDate) {
                         DomainExpiry.sendNotifications(
                             supportInfo.domain,
-                            (await Monitor.getNotificationList(this)) || []
+                            (await Monitor.getNotificationList(this, tenantId)) || []
                         );
                     } else {
                         log.debug("monitor", `Failed getting expiration date for domain ${supportInfo.domain}`);
@@ -1074,14 +1083,14 @@ class Monitor extends BeanModel {
             // G2 task-11: live beats go to the owner's tenant-scoped user room.
             // Rows created before the G4 tenant backfill carry no tenant_id, so
             // the owner's primary tenant stands in until G5 owns dispatch.
-            const roomTenantID = (this.tenant_id != null) ? this.tenant_id : await TenantUser.getPrimaryTenantID(this.user_id);
+            const roomTenantID = (tenantId != null) ? tenantId : await TenantUser.getPrimaryTenantID(this.user_id);
             if (roomTenantID) {
                 io.to(userRoom(roomTenantID, this.user_id)).emit("heartbeat", bean.toJSON());
             } else {
                 log.warn("monitor", `[${this.name}] No tenant context for user ${this.user_id}; skipping live heartbeat emit`);
             }
             // G5.21 frozen signature: tenant first.
-            Monitor.sendStats(io, this.tenant_id, this.id, this.user_id);
+            Monitor.sendStats(io, tenantId, this.id, this.user_id);
 
             // Store to database
             log.debug("monitor", `[${this.name}] Store`);
@@ -1516,7 +1525,9 @@ class Monitor extends BeanModel {
      */
     static async sendNotification(isFirstBeat, monitor, bean) {
         if (!isFirstBeat || bean.status === DOWN) {
-            const notificationList = await Monitor.getNotificationList(monitor);
+            // G5.22: the provider list is scoped to the monitor's own tenant —
+            // a cross-tenant monitor_notification relation can never dispatch.
+            const notificationList = await Monitor.getNotificationList(monitor, monitor.tenant_id);
 
             let text;
             if (bean.status === UP) {
@@ -1573,7 +1584,8 @@ class Monitor extends BeanModel {
                         JSON.parse(notification.config),
                         msg,
                         monitor.toJSON(preloadData, false),
-                        heartbeatJSON
+                        heartbeatJSON,
+                        monitor.tenant_id
                     );
                 } catch (e) {
                     log.error("monitor", "Cannot send notification to " + notification.name);
@@ -1586,12 +1598,18 @@ class Monitor extends BeanModel {
     /**
      * Get list of notification providers for a given monitor
      * @param {Monitor} monitor Monitor to get notification providers for
+     * @param {number|null} tenantId Active tenant of the monitor (G5.22). The
+     * join asserts notification.tenant_id matches, so a mis-bound
+     * monitor_notification row cannot leak another tenant's provider. When
+     * omitted, falls back to the seeded default tenant (logged) so legacy
+     * in-process callers keep working.
      * @returns {Promise<LooseObject<any>[]>} List of notifications
      */
-    static async getNotificationList(monitor) {
+    static async getNotificationList(monitor, tenantId = null) {
+        const scopedTenantId = await resolveTenantId(tenantId, "Monitor.getNotificationList");
         let notificationList = await R.getAll(
-            "SELECT notification.* FROM notification, monitor_notification WHERE monitor_id = ? AND monitor_notification.notification_id = notification.id ",
-            [monitor.id]
+            "SELECT notification.* FROM notification, monitor_notification WHERE monitor_id = ? AND monitor_notification.notification_id = notification.id AND notification.tenant_id = ? ",
+            [monitor.id, scopedTenantId]
         );
         return notificationList;
     }
