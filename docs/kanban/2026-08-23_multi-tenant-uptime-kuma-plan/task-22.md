@@ -187,3 +187,10 @@ Backend engine lead / Uptime Kuma maintainer. Must verify that the heartbeat emi
 - **Redis adapter** — G10 owns this.
 - **Frontend changes** — G7 owns the UI.
 - **Audit log writes** — G9 owns audit logging.
+
+## Coordinator status
+- Status: completed
+- Completed by: CTO (Oracle)
+- Completed at: 2026-08-26T01:28:00Z
+- Verification: PR #55 review — G5.22 heartbeat writer & notification dispatcher tenant-aware per task-22 checklist. Verified: beat() captures tenantId = this.tenant_id (monitor.js:440) and emits via userRoom(roomTenantID, userID) (1088), sendStats/sendCertInfo/sendDomainInfo threaded tenantId (1362,1410,1439), isUnderMaintenance checks tenantId (491), getNotificationList(monitor, tenantId) asserts notification.tenant_id = ? via resolveTenantId (1608-1615), sendNotification threads monitor.tenant_id (1033,1530), Notification.send enriches monitorJSON/heartbeatJSON with tenant_id (260-267), applyNotificationEveryMonitor uses findForTenant (368), clearOldData per-tenant retention loop via monitor_id IN subquery with legacy fallback (53-88). Deviation documented: R.dispense heartbeat kept (no tenant_id column per ADR-0002, frozen schema probe fails dispenseForTenant) — in-scope per task out-of-scope note. Lint 0 errors (134 warnings baseline), tsc clean, master CI lint/tsc/build green, backend suites 34/35 pass = master baseline (D-016 containers excluded), inline 9/9 probe via Echo verification.
+- Commit or artifact reference: PR #55 squash merge 8ec1e98f (feat G5.22 heartbeat writer & notification dispatcher tenant-aware, KUM-207). Branches feat/g5-22-heartbeat-notification-tenant (67e6fe2d + 924d3994). Kanban task-22 done, unblocks G5.23 rebase.
