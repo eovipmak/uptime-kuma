@@ -447,22 +447,22 @@ describe("Uptime Calculator", () => {
                         //Randomly UP, DOWN, MAINTENANCE, PENDING
                         let rand = Math.random();
                         if (rand < 0.25) {
-                            c.update(UP);
+                            await c.update(UP);
                             if (UptimeCalculator.currentDate.unix() > actualStartDate) {
                                 up++;
                             }
                         } else if (rand < 0.5) {
-                            c.update(DOWN);
+                            await c.update(DOWN);
                             if (UptimeCalculator.currentDate.unix() > actualStartDate) {
                                 down++;
                             }
                         } else if (rand < 0.75) {
-                            c.update(MAINTENANCE);
+                            await c.update(MAINTENANCE);
                             if (UptimeCalculator.currentDate.unix() > actualStartDate) {
                                 //up++;
                             }
                         } else {
-                            c.update(PENDING);
+                            await c.update(PENDING);
                             if (UptimeCalculator.currentDate.unix() > actualStartDate) {
                                 down++;
                             }
