@@ -77,7 +77,7 @@ router.get("/api/status-page/:slug", resolveStatusPageTenant, cache("5 minutes")
             return null;
         }
 
-        let statusPageData = await StatusPage.getStatusPageData(statusPage);
+        let statusPageData = await StatusPage.getStatusPageData(statusPage, tenantId);
 
         // Response
         response.json(statusPageData);
@@ -197,7 +197,7 @@ router.get("/api/status-page/:slug/incident-history", resolveStatusPageTenant, c
         }
 
         const cursor = request.query.cursor || null;
-        const result = await StatusPage.getIncidentHistory(statusPageID, cursor, true);
+        const result = await StatusPage.getIncidentHistory(statusPageID, cursor, true, tenantId);
         response.json({
             ok: true,
             ...result,

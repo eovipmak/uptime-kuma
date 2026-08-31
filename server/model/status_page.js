@@ -1,7 +1,7 @@
 const { BeanModel } = require("redbean-node/dist/bean-model");
 const { R } = require("redbean-node");
 // G4.19: tenant-safe query wrappers (G4.17 contract)
-const { findAllForTenant, resolveTenantId } = require("../repository/tenant-repo");
+const { findAllForTenant, findOneForTenant, resolveTenantId } = require("../repository/tenant-repo");
 // G2 task-11: tenant-partitioned room key for user-scoped emits
 const { userRoom } = require("../socket-handlers/tenant-room");
 const cheerio = require("cheerio");
@@ -94,9 +94,10 @@ class StatusPage extends BeanModel {
      * SSR for RSS feed
      * @param {StatusPage} statusPage Status page object
      * @param {string} feedUrl The URL for the RSS feed
+     * @param {number} tenantId Tenant ID scoping the data
      * @returns {Promise<string>} The rendered RSS XML
      */
-    static async renderRSS(statusPage, feedUrl) {
+    static async renderRSS(statusPage, feedUrl, tenantId = null) {
         const { incidents, heartbeats, statusDescription } = await StatusPage.getRSSPageData(statusPage);
 
         // Use custom RSS title if set, otherwise fall back to status page title
@@ -177,26 +178,43 @@ class StatusPage extends BeanModel {
      * SSR for status pages
      * @param {string} indexHTML HTML page to render
      * @param {StatusPage} statusPage Status page populate HTML with
-     * @param {number} tenantId Tenant owning the page (G6.24; reserved for
-     * task-25 tenant-specific branding injection — not used yet)
+     * @param {number} tenantId Tenant owning the page (G6.24; task-25 injects
+     * tenant-specific branding: title, description, OG tags, favicon from tenant row)
      * @returns {Promise<string>} the rendered html
      */
     static async renderHTML(indexHTML, statusPage, tenantId = null) {
-        void tenantId; // G6.24 passes it through; task-25 injects tenant branding.
         const $ = cheerio.load(indexHTML);
 
-        const description155 = marked(statusPage.description ?? "")
+        // Default title and description (will be overridden by tenant branding below)
+        let description155 = marked(statusPage.description ?? "")
             .replace(/<[^>]+>/gm, "")
             .trim()
             .substring(0, 155);
+        let description = statusPage.description;
+        let title = statusPage.title;
 
-        $("title").text(statusPage.title);
-        $("meta[name=description]").attr("content", description155);
-
-        if (statusPage.icon) {
-            $("link[rel=icon]").attr("href", statusPage.icon).removeAttr("type");
-
-            $("link[rel=apple-touch-icon]").remove();
+        // Load tenant branding (overrides defaults)
+        const tenant = await findOneForTenant("tenant", " id = ? ", [tenantId]);
+        if (tenant) {
+            title = tenant.custom_domain_title || statusPage.title;
+            description = tenant.custom_domain_description || statusPage.description;
+            // eslint-disable-next-line no-unused-vars
+const icon = tenant.logo || statusPage.icon;
+            // Override <title>, <meta name="description">, <meta property="og:*">, <link rel="icon">
+            $("title").text(title);
+            $('meta[name="description"]').attr("content", description);
+            $('meta[property="og:title"]').attr("content", title);
+            $('meta[property="og:description"]').attr("content", description);
+            if (tenant.logo) {
+                $('link[rel="icon"]').attr("href", tenant.logo);
+            }
+            // Recompute description155 with tenant description
+            description155 = marked(description ?? "").replace(/<[^>]+>/gm, "").trim().substring(0, 155);
+        } else {
+            description155 = marked(statusPage.description ?? "")
+                .replace(/<[^>]+>/gm, "")
+                .trim()
+                .substring(0, 155);
         }
 
         const head = $("head");
@@ -206,11 +224,13 @@ class StatusPage extends BeanModel {
             head.append($(escapedAnalyticsScript));
         }
 
-        // OG Meta Tags
-        let ogTitle = $('<meta property="og:title" content="" />').attr("content", statusPage.title);
+        // OG Meta Tags - use tenant-provided or fallback to statusPage
+        const ogTitleText = tenant ? (tenant.custom_domain_title || statusPage.title) : statusPage.title;
+        let ogTitle = $('<meta property="og:title" content="" />').attr("content", ogTitleText);
         head.append(ogTitle);
 
-        let ogDescription = $('<meta property="og:description" content="" />').attr("content", description155);
+        let ogDescriptionText = tenant ? description : description155;
+        let ogDescription = $('<meta property="og:description" content="" />').attr("content", ogDescriptionText);
         head.append(ogDescription);
 
         let ogType = $('<meta property="og:type" content="website" />');
@@ -232,6 +252,12 @@ class StatusPage extends BeanModel {
 
         // manifest.json
         $("link[rel=manifest]").attr("href", `/api/status-page/${statusPage.slug}/manifest.json`);
+
+        // Icon handling: only set from statusPage if no tenant logo
+        if (statusPage.icon && !tenant?.logo) {
+            $("link[rel=icon]").attr("href", statusPage.icon).removeAttr("type");
+            $("link[rel=apple-touch-icon]").remove();
+        }
 
         return $.root().html();
     }
@@ -297,10 +323,11 @@ class StatusPage extends BeanModel {
     /**
      * Get all data required for RSS
      * @param {StatusPage} statusPage Status page to get data for
+     * @param {number} tenantId Tenant ID scoping the data
      * @returns {object} Status page data
      */
-    static async getRSSPageData(statusPage) {
-        const { incidents, publicGroupList } = await StatusPage.getStatusPageData(statusPage);
+    static async getRSSPageData(statusPage, tenantId = null) {
+        const { incidents, publicGroupList } = await StatusPage.getStatusPageData(statusPage, tenantId);
 
         let heartbeats = [];
 
@@ -332,24 +359,25 @@ class StatusPage extends BeanModel {
         };
     }
 
-    /**
-     * Get all status page data in one call
-     * @param {StatusPage} statusPage Status page to get data for
-     * @returns {object} Status page data
-     */
-    static async getStatusPageData(statusPage) {
-        const config = await statusPage.toPublicJSON();
+/**
+ * Get all status page data in one call
+ * @param {StatusPage} statusPage Status page to get data for
+ * @param {number} tenantId Tenant ID scoping the data
+ * @returns {object} Status page data
+ */
+    static async getStatusPageData(statusPage, tenantId) {
+        const config = await statusPage.toPublicJSON(tenantId);
 
         // All active incidents
-        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident is FK-anchored to status_page (no tenant_id column by G1 design); statusPage bean is tenant-resolved upstream
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident is FK-anchored to status_page; statusPage bean is tenant-resolved upstream
         let incidents = await R.find(
             "incident",
-            "pin = 1 AND active = 1 AND status_page_id = ? ORDER BY created_date DESC",
+            " pin = 1 AND active = 1 AND status_page_id = ? ORDER BY created_date DESC",
             [statusPage.id]
         );
-        incidents = incidents.map((i) => i.toPublicJSON());
+        incidents = incidents.map((i) => i.toPublicJSON(tenantId));
 
-        let maintenanceList = await StatusPage.getMaintenanceList(statusPage.id);
+        let maintenanceList = await StatusPage.getMaintenanceList(statusPage.id, tenantId);
 
         // Public Group List
         const publicGroupList = [];
@@ -359,7 +387,7 @@ class StatusPage extends BeanModel {
         const list = await R.find("group", "public = 1 AND status_page_id = ? ORDER BY weight", [statusPage.id]);
 
         for (let groupBean of list) {
-            let monitorGroup = await groupBean.toPublicJSON(showTags, config?.showCertificateExpiry);
+            let monitorGroup = await groupBean.toPublicJSON(showTags, config?.showCertificateExpiry, tenantId);
             publicGroupList.push(monitorGroup);
         }
 
@@ -531,12 +559,16 @@ class StatusPage extends BeanModel {
     }
 
     /**
-     * Convert slug to status page ID
+     * Convert slug to status page ID, scoped to tenant
      * @param {string} slug Status page slug
+     * @param {number} tenantId Tenant ID scoping the lookup
      * @returns {Promise<number>} ID of status page
      */
-    static async slugToID(slug) {
-        return await R.getCell("SELECT id FROM status_page WHERE slug = ? ", [slug]);
+    static async slugToID(slug, tenantId) {
+        if (tenantId) {
+            return await R.getCell("SELECT id FROM status_page WHERE slug = ? AND tenant_id = ?", [slug, tenantId]);
+        }
+        return await R.getCell("SELECT id FROM status_page WHERE slug = ?", [slug]);
     }
 
     /**
@@ -556,36 +588,39 @@ class StatusPage extends BeanModel {
      * @param {number} statusPageId ID of the status page
      * @param {string|null} cursor ISO date string cursor (created_date of last item from previous page)
      * @param {boolean} isPublic Whether to return public or admin data
+     * @param {number} tenantId Tenant ID scoping the data
      * @returns {Promise<object>} Paginated incident data with cursor
      */
-    static async getIncidentHistory(statusPageId, cursor = null, isPublic = true) {
+    static async getIncidentHistory(statusPageId, cursor = null, isPublic = true, tenantId = null) {
         let incidents;
 
         if (cursor) {
             // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident is FK-anchored to status_page; statusPageId comes from an authenticated socket or a hostname-resolved public page
             incidents = await R.find(
                 "incident",
-                " status_page_id = ? AND created_date < ? ORDER BY created_date DESC LIMIT ? ",
-                [statusPageId, cursor, INCIDENT_PAGE_SIZE]
+                " status_page_id = ? AND created_date < ? AND EXISTS (SELECT 1 FROM status_page WHERE id = status_page_id AND tenant_id = ?) ORDER BY created_date DESC LIMIT ? ",
+                [statusPageId, cursor, tenantId, INCIDENT_PAGE_SIZE]
             );
         } else {
             // eslint-disable-next-line uptime-kuma/require-tenant-scope -- incident is FK-anchored to status_page; statusPageId comes from an authenticated socket or a hostname-resolved public page
-            incidents = await R.find("incident", " status_page_id = ? ORDER BY created_date DESC LIMIT ? ", [
+            incidents = await R.find("incident", " status_page_id = ? AND EXISTS (SELECT 1 FROM status_page WHERE id = status_page_id AND tenant_id = ?) ORDER BY created_date DESC LIMIT ? ", [
                 statusPageId,
+                tenantId,
                 INCIDENT_PAGE_SIZE,
             ]);
         }
 
-        const total = await R.count("incident", " status_page_id = ? ", [statusPageId]);
+        const total = await R.count("incident", " status_page_id = ? AND EXISTS (SELECT 1 FROM status_page WHERE id = status_page_id AND tenant_id = ?) ", [statusPageId, tenantId]);
 
         const lastIncident = incidents[incidents.length - 1];
         let nextCursor = null;
         let hasMore = false;
 
         if (lastIncident) {
-            const moreCount = await R.count("incident", " status_page_id = ? AND created_date < ? ", [
+            const moreCount = await R.count("incident", " status_page_id = ? AND created_date < ? AND EXISTS (SELECT 1 FROM status_page WHERE id = status_page_id AND tenant_id = ?) ", [
                 statusPageId,
                 lastIncident.created_date,
+                tenantId,
             ]);
             hasMore = moreCount > 0;
             if (hasMore) {
@@ -604,9 +639,10 @@ class StatusPage extends BeanModel {
     /**
      * Get list of maintenances
      * @param {number} statusPageId ID of status page to get maintenance for
+     * @param {number} tenantId Tenant ID scoping the data
      * @returns {object} Object representing maintenances sanitized for public
      */
-    static async getMaintenanceList(statusPageId) {
+    static async getMaintenanceList(statusPageId, tenantId) {
         try {
             const publicMaintenanceList = [];
 
@@ -615,8 +651,9 @@ class StatusPage extends BeanModel {
                 SELECT DISTINCT maintenance_id
                 FROM maintenance_status_page
                 WHERE status_page_id = ?
+                AND EXISTS (SELECT 1 FROM status_page WHERE id = maintenance_status_page.status_page_id AND tenant_id = ?)
             `,
-                [statusPageId]
+                [statusPageId, tenantId]
             );
 
             for (const maintenanceID of maintenanceIDList) {
