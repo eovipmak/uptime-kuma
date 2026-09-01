@@ -194,7 +194,7 @@ class StatusPage extends BeanModel {
         let title = statusPage.title;
 
         // Load tenant branding (overrides defaults)
-        // tenant table is global (no tenant_id column), use R.findOne directly
+        // eslint-disable-next-line uptime-kuma/require-tenant-scope -- tenant table is global (no tenant_id column)
         const tenant = await R.findOne("tenant", " id = ? ", [tenantId]);
         if (tenant) {
             title = tenant.custom_domain_title || statusPage.title;
