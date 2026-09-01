@@ -44,9 +44,9 @@ class StatusPage extends BeanModel {
      * @returns {Promise<void>}
      */
     static async handleStatusPageRSSResponse(response, slug, request, tenantId) {
-        let statusPage = await R.findOne("status_page", " slug = ? AND tenant_id = ? ", [slug, tenantId]);
+        let statusPage = await findOneForTenant("status_page", " slug = ? AND published = 1 ", [slug], tenantId);
 
-        if (statusPage && Number(statusPage.tenant_id) !== Number(tenantId)) {
+        if (!statusPage || Number(statusPage.tenant_id) !== Number(tenantId)) {
             // Belt-and-braces: never render a page outside the resolved tenant.
             statusPage = null;
         }
@@ -76,9 +76,9 @@ class StatusPage extends BeanModel {
             slug = "default";
         }
 
-        let statusPage = await R.findOne("status_page", " slug = ? AND tenant_id = ? ", [slug, tenantId]);
+        let statusPage = await findOneForTenant("status_page", " slug = ? AND published = 1 ", [slug], tenantId);
 
-        if (statusPage && Number(statusPage.tenant_id) !== Number(tenantId)) {
+        if (!statusPage || Number(statusPage.tenant_id) !== Number(tenantId)) {
             // Belt-and-braces: never render a page outside the resolved tenant.
             statusPage = null;
         }
@@ -194,7 +194,8 @@ class StatusPage extends BeanModel {
         let title = statusPage.title;
 
         // Load tenant branding (overrides defaults)
-        const tenant = await findOneForTenant("tenant", " id = ? ", [tenantId]);
+        // tenant table is global (no tenant_id column), use R.findOne directly
+        const tenant = await R.findOne("tenant", " id = ? ", [tenantId]);
         if (tenant) {
             title = tenant.custom_domain_title || statusPage.title;
             description = tenant.custom_domain_description || statusPage.description;
