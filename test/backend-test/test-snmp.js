@@ -4,12 +4,35 @@ const { SNMPMonitorType } = require("../../server/monitor-types/snmp");
 const { UP } = require("../../src/util");
 
 describe("SNMPMonitorType", () => {
-    test(
-        "check() sets heartbeat to UP when SNMP agent responds",
-        {
-            skip: !!process.env.CI,
-        },
-        async () => {
+    test("check() sets heartbeat to UP when SNMP agent responds", async () => {
+        const snmp = require("net-snmp");
+        const originalCreateSession = snmp.createSession;
+        const originalCreateV3Session = snmp.createV3Session;
+
+        // Stub createSession to avoid real network I/O (D-016: no docker/Testcontainers)
+        snmp.createSession = function () {
+            return {
+                on: () => {},
+                close: () => {},
+                get: (_oids, cb) =>
+                    cb(null, [
+                        {
+                            oid: "1.3.6.1.2.1.1.1.0",
+                            type: snmp.ObjectType.OctetString,
+                            value: "Linux mocked snmpd",
+                        },
+                    ]),
+            };
+        };
+        snmp.createV3Session = function () {
+            return {
+                on: () => {},
+                close: () => {},
+                get: (_oids, cb) => cb(new Error("should not be called for v2c test")),
+            };
+        };
+
+        try {
             const monitor = {
                 type: "snmp",
                 hostname: "127.0.0.1",
@@ -31,8 +54,11 @@ describe("SNMPMonitorType", () => {
 
             assert.strictEqual(heartbeat.status, UP);
             assert.match(heartbeat.msg, /JSON query passes/);
+        } finally {
+            snmp.createSession = originalCreateSession;
+            snmp.createV3Session = originalCreateV3Session;
         }
-    );
+    });
 
     test(
         "check() throws when SNMP agent does not respond",

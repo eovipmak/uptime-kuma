@@ -81,7 +81,8 @@ describe("Database Migration", () => {
 
                 // Verify tables exist and are accessible
                 const tables = await R.knex.raw("SELECT name FROM sqlite_master WHERE type='table'");
-                assert.ok(tables.rows.length > 0);
+                const rows = tables.rows || tables;
+                assert.ok(rows && rows.length > 0);
 
                 // Test passes if migrations complete successfully without errors
             } finally {
