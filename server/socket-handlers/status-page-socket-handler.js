@@ -151,13 +151,13 @@ module.exports.statusPageSocketHandler = (socket) => {
             // G4.18 exemption: public slug resolution is G6's concern (the
             // tenant is resolved by hostname for anonymous viewers, task-18
             // out-of-scope note); StatusPage.slugToID stays until then.
-            let statusPageID = await StatusPage.slugToID(slug);
+            let statusPageID = await StatusPage.slugToID(slug, socket.tenantID);
             if (!statusPageID) {
                 throw new Error("slug is not found");
             }
 
             const isPublic = !socket.userID;
-            const result = await StatusPage.getIncidentHistory(statusPageID, cursor, isPublic);
+            const result = await StatusPage.getIncidentHistory(statusPageID, cursor, isPublic, socket.tenantID);
             callback({
                 ok: true,
                 ...result,

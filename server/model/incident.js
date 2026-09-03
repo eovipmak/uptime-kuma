@@ -16,9 +16,10 @@ class Incident extends BeanModel {
 
     /**
      * Return an object that ready to parse to JSON for public
+     * @param {number} tenantId Tenant ID scoping the data (identity for API consistency)
      * @returns {object} Object ready to parse
      */
-    toPublicJSON() {
+    toPublicJSON(tenantId = null) {
         return {
             id: this.id,
             style: this.style,

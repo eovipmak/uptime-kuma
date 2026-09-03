@@ -8,10 +8,11 @@ class Group extends BeanModel {
      * @param {boolean} showTags Should the JSON include monitor tags
      * @param {boolean} certExpiry Should JSON include info about
      * certificate expiry?
+     * @param {number} tenantId Tenant ID scoping the data
      * @returns {Promise<object>} Object ready to parse
      */
-    async toPublicJSON(showTags = false, certExpiry = false) {
-        let monitorBeanList = await this.getMonitorList();
+    async toPublicJSON(showTags = false, certExpiry = false, tenantId = null) {
+        let monitorBeanList = await this.getMonitorList(tenantId);
         let monitorList = [];
 
         for (let bean of monitorBeanList) {
@@ -28,9 +29,24 @@ class Group extends BeanModel {
 
     /**
      * Get all monitors
+     * @param {number} tenantId Tenant ID scoping the monitors
      * @returns {Promise<Bean[]>} List of monitors
      */
-    async getMonitorList() {
+    async getMonitorList(tenantId) {
+        if (tenantId == null) {
+            return R.convertToBeans(
+                "monitor",
+                await R.getAll(
+                    `
+                SELECT monitor.*, monitor_group.send_url, monitor_group.custom_url FROM monitor, monitor_group
+                WHERE monitor.id = monitor_group.monitor_id
+                AND group_id = ?
+                ORDER BY monitor_group.weight
+            `,
+                    [this.id]
+                )
+            );
+        }
         return R.convertToBeans(
             "monitor",
             await R.getAll(
@@ -38,9 +54,10 @@ class Group extends BeanModel {
             SELECT monitor.*, monitor_group.send_url, monitor_group.custom_url FROM monitor, monitor_group
             WHERE monitor.id = monitor_group.monitor_id
             AND group_id = ?
+            AND monitor.tenant_id = ?
             ORDER BY monitor_group.weight
         `,
-                [this.id]
+                [this.id, tenantId]
             )
         );
     }
